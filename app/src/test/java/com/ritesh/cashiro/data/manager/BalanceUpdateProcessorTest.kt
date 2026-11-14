@@ -117,6 +117,87 @@ class BalanceUpdateProcessorTest {
         assertEquals(null, refiled.accountLast4)
     }
 
+    @Test
+    fun `a card linked to an account under another bank name books there and says so`() = runTest {
+        val balanceDao = FakeAccountBalanceDao()
+        // The user set the account up by hand under their own name for the bank.
+        balanceDao.seedBalance(
+            AccountBalanceEntity(
+                bankName = "My Bank",
+                accountLast4 = "9999",
+                balance = BigDecimal("10000"),
+                timestamp = LocalDateTime.of(2025, 1, 1, 0, 0),
+                sourceType = "MANUAL"
+            )
+        )
+        val cardDao = FakeCardDao()
+        cardDao.cards += CardEntity(
+            id = 1L,
+            cardLast4 = cardLast4,
+            cardType = CardType.DEBIT,
+            bankName = bank,
+            accountLast4 = "9999"
+        )
+        val processor = processorWith(balanceDao, cardDao)
+
+        val booked = processor.process(parsedCardSpend("500"), entity(), rowId = 1L)
+
+        assertEquals(BalanceUpdateProcessor.BookedAccount("My Bank", "9999"), booked)
+        assertEquals(BigDecimal("9500"), balanceDao.latest("My Bank", "9999")?.balance)
+        assertEquals(null, balanceDao.latest(bank, "9999"), "no second account under the alert's bank name")
+        assertEquals(null, balanceDao.latest(bank, cardLast4), "nothing booked to the card's own number")
+    }
+
+    @Test
+    fun `a card linked to a credit card account is charged on that credit card`() = runTest {
+        val balanceDao = FakeAccountBalanceDao()
+        balanceDao.seedCreditCard(bank, "7777", outstanding = "100", limit = "5000")
+        val cardDao = FakeCardDao()
+        cardDao.cards += CardEntity(
+            id = 1L,
+            cardLast4 = cardLast4,
+            cardType = CardType.CREDIT,
+            bankName = bank,
+            accountLast4 = "7777"
+        )
+        val processor = processorWith(balanceDao, cardDao)
+
+        val booked = processor.process(parsedCardSpend("500"), entity(), rowId = 1L)
+
+        assertEquals(BalanceUpdateProcessor.BookedAccount(bank, "7777"), booked)
+        assertEquals(BigDecimal("600"), balanceDao.latest(bank, "7777")?.balance)
+    }
+
+    @Test
+    fun `a credit card linked to a bank account still owes on itself`() = runTest {
+        val balanceDao = FakeAccountBalanceDao()
+        balanceDao.seedCreditCard(bank, cardLast4, outstanding = "0", limit = "5000")
+        balanceDao.seedBalance(
+            AccountBalanceEntity(
+                bankName = bank,
+                accountLast4 = "9999",
+                balance = BigDecimal("10000"),
+                timestamp = LocalDateTime.of(2025, 1, 1, 0, 0),
+                sourceType = "MANUAL"
+            )
+        )
+        val cardDao = FakeCardDao()
+        cardDao.cards += CardEntity(
+            id = 1L,
+            cardLast4 = cardLast4,
+            cardType = CardType.CREDIT,
+            bankName = bank,
+            accountLast4 = "9999"
+        )
+        val processor = processorWith(balanceDao, cardDao)
+
+        val booked = processor.process(parsedCardSpend("500"), entity(), rowId = 1L)
+
+        assertEquals(BalanceUpdateProcessor.BookedAccount(bank, cardLast4), booked)
+        assertEquals(BigDecimal("500"), balanceDao.latest(bank, cardLast4)?.balance)
+        assertEquals(BigDecimal("10000"), balanceDao.latest(bank, "9999")?.balance)
+    }
+
     private fun processorWith(balanceDao: FakeAccountBalanceDao, cardDao: FakeCardDao) =
         BalanceUpdateProcessor(
             cardRepository = CardRepository(cardDao),

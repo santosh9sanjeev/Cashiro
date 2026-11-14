@@ -97,6 +97,7 @@ import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 import com.ritesh.cashiro.R
 import com.ritesh.cashiro.data.backup.BackupConfiguration
+import com.ritesh.cashiro.data.backup.ImportStrategy
 import com.ritesh.cashiro.data.cloud.BackupSchedule
 import com.ritesh.cashiro.data.cloud.CloudFileInfo
 import com.ritesh.cashiro.data.cloud.CloudProviderType
@@ -174,6 +175,8 @@ fun BackupSyncScreen(
     var restorePassphraseInput by remember { mutableStateOf("") }
     var snapshotToDelete by remember { mutableStateOf<CloudFileInfo?>(null) }
     var showExportDialog by remember { mutableStateOf(false) }
+    // A picked backup waiting for the user to choose how to bring it in.
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
 
     // File launchers for Data Management
     val exportLauncher = rememberLauncherForActivityResult(
@@ -186,7 +189,7 @@ fun BackupSyncScreen(
 
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
-        onResult = { uri -> uri?.let { dataPrivacyViewModel.importBackup(it) } }
+        onResult = { uri -> pendingImportUri = uri }
     )
 
     val pdfImportLauncher = rememberLauncherForActivityResult(
@@ -1405,6 +1408,35 @@ fun BackupSyncScreen(
             },
             blurEffects = blurEffects,
             hazeState = hazeState
+        )
+    }
+
+    // How to bring a backup in: restore it exactly, or merge it with what is here.
+    pendingImportUri?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { pendingImportUri = null },
+            title = { Text("Import backup") },
+            text = {
+                Text(
+                    "Replace all restores the backup exactly as it was exported: " +
+                        "every account, card, transaction, category and setting on this " +
+                        "device is replaced by the backup's.\n\n" +
+                        "Merge adds what the backup has and this device is missing, and " +
+                        "keeps everything already here."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    dataPrivacyViewModel.importBackup(uri, ImportStrategy.REPLACE_ALL)
+                    pendingImportUri = null
+                }) { Text("Replace all") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    dataPrivacyViewModel.importBackup(uri, ImportStrategy.MERGE)
+                    pendingImportUri = null
+                }) { Text("Merge") }
+            }
         )
     }
 

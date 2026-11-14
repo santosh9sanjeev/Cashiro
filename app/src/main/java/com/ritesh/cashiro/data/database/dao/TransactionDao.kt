@@ -18,6 +18,13 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE id = :transactionId")
     suspend fun getTransactionById(transactionId: Long): TransactionEntity?
 
+    /**
+     * Every transaction, deleted ones included. A backup needs the deleted ones:
+     * they are what stops a later SMS scan from bringing a deleted transaction back.
+     */
+    @Query("SELECT * FROM transactions ORDER BY date_time DESC")
+    suspend fun getAllTransactionsIncludingDeleted(): List<TransactionEntity>
+
     @Query(
             """
         SELECT * FROM transactions

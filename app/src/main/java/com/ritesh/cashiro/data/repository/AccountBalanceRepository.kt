@@ -234,7 +234,11 @@ class AccountBalanceRepository @Inject constructor(
             transactionId = null,
             smsSource = smsSource?.take(500),  // Limit to 500 chars
             sourceType = sourceType,
-            currency = currency,
+            // An existing account keeps its currency. This used to stamp the
+            // caller's currency - INR by default - on the account's newest row,
+            // and every later transaction inherits the newest row's currency, so
+            // linking a card turned an AED account into an INR one.
+            currency = latest?.currency ?: currency,
             iconResId = latest?.iconResId ?: 0,
             iconName = latest?.iconName ?: "",
             isWallet = latest?.isWallet ?: false,

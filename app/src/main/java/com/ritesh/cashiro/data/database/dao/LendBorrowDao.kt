@@ -69,4 +69,12 @@ interface LendBorrowDao {
 
     @Query("DELETE FROM lend_borrow_transactions WHERE person_id = :personId")
     suspend fun deleteAllTransactionsForPerson(personId: Long)
+
+    /** Empties the ledger, for restoring a backup over it. */
+    @Query("DELETE FROM lend_borrow_transactions")
+    suspend fun clearTransactions()
+
+    /** Removes every person, for restoring a backup over them. */
+    @Query("DELETE FROM lend_borrow_persons")
+    suspend fun clearPersons()
 }

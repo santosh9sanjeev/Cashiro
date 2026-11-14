@@ -76,7 +76,6 @@ class AccountDetailViewModel @Inject constructor(
             combine(
                 selectedDateRange,
                 transactionRepository.getTransactionsByAccount(bankName, accountLast4),
-                currencyRepository.effectiveBaseCurrencyCode,
                 accountBalanceRepository.getLatestBalanceFlow(bankName, accountLast4),
                 currencyConversionService.rateChangeTrigger,
                 lendBorrowRepository.getAllTransactions(),
@@ -84,10 +83,9 @@ class AccountDetailViewModel @Inject constructor(
             ) { args: Array<Any?> ->
                 val dateRange = args[0] as DateRange
                 val allTransactions = args[1] as List<TransactionEntity>
-                val mainCurrency = args[2] as String
-                val latestBalance = args[3] as AccountBalanceEntity?
-                val lbTransactions = args[5] as List<LendBorrowTransactionItem>
-                val persons = args[6] as List<LendBorrowPerson>
+                val latestBalance = args[2] as AccountBalanceEntity?
+                val lbTransactions = args[4] as List<LendBorrowTransactionItem>
+                val persons = args[5] as List<LendBorrowPerson>
 
                 val (startDate, endDate) = getDateRangeValues(dateRange)
 
@@ -101,6 +99,11 @@ class AccountDetailViewModel @Inject constructor(
                 }
 
                 val accountPrimaryCurrency = latestBalance?.currency ?: getPrimaryCurrencyForAccount(bankName)
+                // An account's figures are in the currency it holds. They were
+                // converted into the app-wide currency but shown with the
+                // account's symbol, so an AED account could show rupee amounts
+                // labelled as dirhams.
+                val mainCurrency = accountPrimaryCurrency
                 val hasMultipleCurrencies = filteredTransactions.map { it.currency }.distinct().size > 1
 
                 // Refresh exchange rates if we have multiple currencies
@@ -109,7 +112,7 @@ class AccountDetailViewModel @Inject constructor(
                     currencyConversionService.refreshExchangeRatesForAccount(accountCurrencies)
                 }
 
-                // Calculate total income and expenses converted to the effective base currency
+                // Calculate total income and expenses in the account's own currency
                 var totalIncome = BigDecimal.ZERO
                 var totalExpenses = BigDecimal.ZERO
 
@@ -154,7 +157,7 @@ class AccountDetailViewModel @Inject constructor(
                         )
                     }
 
-                // Calculate converted amounts for the UI (TransactionItem) based on Main App Currency
+                // Amounts in other currencies, converted into the account's currency for the list
                 val converted = filteredTransactions
                     .filter { it.currency != mainCurrency }
                     .associate { tx ->
@@ -228,7 +231,11 @@ class AccountDetailViewModel @Inject constructor(
                     endDate
                 )
             }.collect { balanceHistory ->
-                val effectiveCurrency = currencyRepository.effectiveBaseCurrencyCode.first()
+                // Charted in the account's own currency, like the rest of the screen.
+                val effectiveCurrency = accountBalanceRepository
+                    .getLatestBalance(bankName, accountLast4)?.currency
+                    ?: balanceHistory.lastOrNull()?.currency
+                    ?: getPrimaryCurrencyForAccount(bankName)
 
                 val chartData = balanceHistory.map { entity ->
                     val convertedBalance = if (entity.currency != effectiveCurrency) {

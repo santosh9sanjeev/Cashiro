@@ -39,6 +39,10 @@ interface UnrecognizedSmsDao {
     
     @Query("UPDATE unrecognized_sms SET is_deleted = 1")
     suspend fun deleteAll()
+
+    /** Removes every row outright, for restoring a backup over the table. */
+    @Query("DELETE FROM unrecognized_sms")
+    suspend fun deleteAllPermanently()
     
     @Query("UPDATE unrecognized_sms SET is_deleted = 1 WHERE id = :id")
     suspend fun softDeleteById(id: Long)

@@ -103,13 +103,27 @@ class DataPrivacyViewModel @Inject constructor(
         }
     }
 
-    fun importBackup(uri: Uri) {
+    /**
+     * Imports a Cashiro backup. [ImportStrategy.REPLACE_ALL] restores it exactly,
+     * replacing everything on this device; [ImportStrategy.MERGE] adds what is
+     * missing and keeps the rest.
+     */
+    fun importBackup(uri: Uri, strategy: ImportStrategy = ImportStrategy.MERGE) {
         viewModelScope.launch {
             try {
-                _uiState.update { it.copy(importExportMessage = "Importing backup...") }
-                when (val result = backupImporter.importBackup(uri, ImportStrategy.MERGE)) {
+                _uiState.update {
+                    it.copy(
+                        importExportMessage = if (strategy == ImportStrategy.REPLACE_ALL) {
+                            "Restoring backup..."
+                        } else {
+                            "Importing backup..."
+                        }
+                    )
+                }
+                when (val result = backupImporter.importBackup(uri, strategy)) {
                     is ImportResult.Success -> {
-                        _uiState.update { it.copy(importExportMessage = "Import successful! Imported ${result.importedTransactions} transactions, ${result.importedCategories} categories.") }
+                        val verb = if (strategy == ImportStrategy.REPLACE_ALL) "Restored" else "Imported"
+                        _uiState.update { it.copy(importExportMessage = "Import successful! $verb ${result.importedTransactions} transactions, ${result.importedCategories} categories.") }
                         maybePromptMainAccountSelection(result.importedAccounts)
                     }
                     is ImportResult.Error -> {

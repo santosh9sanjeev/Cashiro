@@ -14,10 +14,14 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+
+/** A balance row whose transaction was deleted: it carries the balance from before it. */
+private const val SOURCE_DELETE_REVERSAL = "DELETE_REVERSAL"
 
 @Singleton
 class TransactionRepository @Inject constructor(
@@ -131,12 +135,14 @@ class TransactionRepository @Inject constructor(
             transactionDao.updateTransaction(transaction)
 
     suspend fun deleteTransaction(transaction: TransactionEntity, hardDelete: Boolean = false) {
+        // Deleting something already deleted must not give its money back twice.
+        val alreadyDeleted = transactionDao.getTransactionById(transaction.id)?.isDeleted == true
         if (hardDelete) {
             transactionDao.deleteTransaction(transaction)
         } else {
             transactionDao.softDeleteTransaction(transaction.id)
         }
-        reverseBalanceForDeletion(transaction)
+        if (!alreadyDeleted) takeOutOfBalances(transaction)
     }
 
     suspend fun deleteTransactionById(id: Long, hardDelete: Boolean = false) {
@@ -146,7 +152,7 @@ class TransactionRepository @Inject constructor(
         } else {
             transactionDao.softDeleteTransaction(id)
         }
-        reverseBalanceForDeletion(transaction)
+        if (!transaction.isDeleted) takeOutOfBalances(transaction)
     }
 
     suspend fun deleteAllTransactions() = transactionDao.deleteAllTransactions()
@@ -167,29 +173,151 @@ class TransactionRepository @Inject constructor(
         transactionDao.getTransactionsByReferenceAndAmount(reference, amount, accountLast4, startDate, endDate)
 
     suspend fun undoDeleteTransaction(transaction: TransactionEntity) {
+        // Restoring something that is not deleted must not apply it a second time.
+        val stored = transactionDao.getTransactionById(transaction.id)
+        if (stored != null && !stored.isDeleted) return
         transactionDao.updateTransaction(transaction.copy(isDeleted = false))
-        applyBalanceForTransaction(transaction)
+        putBackIntoBalances(transaction)
     }
 
     suspend fun deleteTransactions(transactions: List<TransactionEntity>, hardDelete: Boolean = false) {
+        val live = transactions.filter { transactionDao.getTransactionById(it.id)?.isDeleted != true }
         val transactionIds = transactions.map { it.id }
         if (hardDelete) {
             transactionDao.deleteTransactionsByIds(transactionIds)
         } else {
             transactionDao.softDeleteTransactions(transactionIds)
         }
-        transactions.forEach { reverseBalanceForDeletion(it) }
+        live.forEach { takeOutOfBalances(it) }
     }
 
     suspend fun undoDeleteTransactions(transactions: List<TransactionEntity>) {
-        transactions.forEach { transaction ->
-            transactionDao.updateTransaction(transaction.copy(isDeleted = false))
-            applyBalanceForTransaction(transaction)
+        transactions.forEach { undoDeleteTransaction(it) }
+    }
+
+    /**
+     * Balance rows a recent deletion neutralised, kept so that undoing it puts
+     * every account back exactly as it was. Undo is offered for a few seconds
+     * right after a delete; if the app is restarted in between, the effect is
+     * re-applied as of now instead.
+     */
+    private val deletedRowsByTransaction = ConcurrentHashMap<Long, List<NeutralisedRow>>()
+
+    private data class NeutralisedRow(
+        val rowId: Long,
+        val original: AccountBalanceEntity,
+        /** What the transaction added to the balance before it, for a computed row. */
+        val effect: BigDecimal,
+        /** Whether the row held a balance the bank reported, which comes back as reported. */
+        val reported: Boolean
+    )
+
+    /**
+     * Takes a deleted transaction's effect out of every account it moved.
+     *
+     * Each balance row the transaction wrote is turned into a plain snapshot that
+     * carries the balance from before it, and every row after it is recalculated.
+     * The account's history then reads as though the transaction never happened:
+     * deleting an expense gives the money back, deleting income takes it away,
+     * deleting a card charge lowers what is owed, and a transfer is undone on both
+     * accounts. The rows stay in place, so an account whose history this
+     * transaction started is not removed with it.
+     *
+     * This used to post a correction dated now on the account the transaction
+     * named. That got a linked debit card's spending (booked to the linked
+     * account) and a transfer whose destination had never been credited wrong, and
+     * left the history showing the transaction until the correction.
+     */
+    private suspend fun takeOutOfBalances(transaction: TransactionEntity) {
+        val rows = accountBalanceRepository.getBalancesByTransactionId(transaction.id)
+        if (rows.isEmpty()) {
+            // Nothing records where this transaction landed (it predates that, or
+            // came from an import that did not keep the link). Undo its effect as
+            // of now, which is all that can be done. A balance update never moved
+            // money, so there is nothing to undo.
+            if (transaction.transactionType != TransactionType.BALANCE_UPDATE) {
+                applyTransactionToBalances(transaction, reverse = true, sourceType = "DELETE_REVERSAL")
+            }
+            return
+        }
+
+        val neutralised = mutableListOf<NeutralisedRow>()
+        for (row in rows) {
+            // The latest version: an earlier row of the same transaction (a transfer
+            // can write two on one account) may have been recalculated already.
+            val current = accountBalanceRepository.getBalanceById(row.id) ?: continue
+            val before = accountBalanceRepository.getLatestBalanceOnOrBefore(
+                current.bankName, current.accountLast4, current.timestamp.minusNanos(1)
+            )
+            val base = before?.balance
+                ?: (current.balance - effectOn(current, rowLegType(current, transaction), transaction))
+
+            neutralised += NeutralisedRow(
+                rowId = current.id,
+                original = current,
+                effect = current.balance - base,
+                reported = current.sourceType == SOURCE_TRANSACTION_SMS_BALANCE ||
+                    current.sourceType == SOURCE_SMS_BALANCE
+            )
+            accountBalanceRepository.updateBalance(
+                current.copy(
+                    balance = base,
+                    transactionId = null,
+                    sourceType = SOURCE_DELETE_REVERSAL
+                )
+            )
+            accountBalanceRepository.recalculateBalancesAfter(
+                current.bankName,
+                current.accountLast4,
+                current.timestamp,
+                base,
+                previousOldBalance = current.balance
+            )
+        }
+        deletedRowsByTransaction[transaction.id] = neutralised
+    }
+
+    /** Reverses [takeOutOfBalances] for a transaction that is being restored. */
+    private suspend fun putBackIntoBalances(transaction: TransactionEntity) {
+        val neutralised = deletedRowsByTransaction.remove(transaction.id)
+        if (neutralised == null) {
+            // Either it never had balance rows (it was undone as of now, so redo it
+            // as of now) or the record of its rows was lost with the app's process.
+            if (transaction.transactionType != TransactionType.BALANCE_UPDATE) {
+                applyBalanceForTransaction(transaction)
+            }
+            return
+        }
+
+        for (entry in neutralised) {
+            val current = accountBalanceRepository.getBalanceById(entry.rowId) ?: continue
+            val before = accountBalanceRepository.getLatestBalanceOnOrBefore(
+                current.bankName, current.accountLast4, current.timestamp.minusNanos(1)
+            )
+            val base = before?.balance ?: current.balance
+            val restored = if (entry.reported) entry.original.balance else base + entry.effect
+            accountBalanceRepository.updateBalance(
+                current.copy(
+                    balance = restored,
+                    transactionId = entry.original.transactionId,
+                    sourceType = entry.original.sourceType
+                )
+            )
+            accountBalanceRepository.recalculateBalancesAfter(
+                current.bankName,
+                current.accountLast4,
+                current.timestamp,
+                restored,
+                previousOldBalance = current.balance
+            )
         }
     }
 
-    private suspend fun reverseBalanceForDeletion(transaction: TransactionEntity) {
-        applyTransactionToBalances(transaction, reverse = true, sourceType = "DELETE_REVERSAL")
+    /** The rule a transaction's row was applied with: a transfer leaves its own account and enters the other. */
+    private fun rowLegType(row: AccountBalanceEntity, transaction: TransactionEntity): TransactionType = when {
+        transaction.transactionType != TransactionType.TRANSFER -> transaction.transactionType
+        row.bankName == transaction.bankName && row.accountLast4 == transaction.accountNumber -> TransactionType.EXPENSE
+        else -> TransactionType.INCOME
     }
 
     /**

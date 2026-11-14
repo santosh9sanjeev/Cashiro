@@ -153,7 +153,9 @@ class BackupExporter @Inject constructor(
      */
     private suspend fun createBackup(config: BackupConfiguration): CashiroBackup {
         // Get all database data
-        val transactions = if (config.includeTransactionalData) database.transactionDao().getAllTransactions().first() else emptyList()
+        // Deleted transactions are kept too: their markers stop a later SMS scan
+        // from bringing back what the user deleted.
+        val transactions = if (config.includeTransactionalData) database.transactionDao().getAllTransactionsIncludingDeleted() else emptyList()
         val categories = if (config.includeProfileData) database.categoryDao().getAllCategories().first() else emptyList()
         val cards = if (config.includeProfileData) database.cardDao().getAllCards().first() else emptyList()
         val accountBalances = if (config.includeTransactionalData) database.accountBalanceDao().getAllBalances().first() else emptyList()
@@ -166,7 +168,16 @@ class BackupExporter @Inject constructor(
         val subcategories = if (config.includeProfileData) database.subcategoryDao().getAllSubcategories().first() else emptyList()
         val rules = if (config.includeAppPreferences) database.ruleDao().getAllRules().first() else emptyList()
         val exchangeRates = if (config.includeAppPreferences) database.exchangeRateDao().getAllRates().first() else emptyList()
-        val ruleApplications = if (config.includeTransactionalData) database.ruleApplicationDao().getRecentApplications(1000).first() else emptyList() // Limit to recent apps for backup size
+        // Every application whose transaction and rule are both in this backup.
+        // One pointing at anything else cannot be restored: the table enforces
+        // both links, and a single orphan used to abort the whole restore.
+        val ruleApplications = if (config.includeTransactionalData) {
+            val exportedTransactionIds = transactions.map { it.id.toString() }.toSet()
+            val exportedRuleIds = rules.map { it.id }.toSet()
+            database.ruleApplicationDao().getAllApplications().filter {
+                it.transactionId in exportedTransactionIds && it.ruleId in exportedRuleIds
+            }
+        } else emptyList()
         val webhookProfiles = if (config.includeAppPreferences) {
             database.webhookProfileDao().getAllProfiles().first().map { profile ->
                 WebhookProfileBackup(
@@ -195,8 +206,9 @@ class BackupExporter @Inject constructor(
         val lastScanPeriod = userPreferencesRepository.getLastScanPeriod().first()
         
         // Calculate statistics
-        val dateRange = if (transactions.isNotEmpty()) {
-            val sorted = transactions.sortedBy { it.dateTime }
+        val liveTransactions = transactions.filterNot { it.isDeleted }
+        val dateRange = if (liveTransactions.isNotEmpty()) {
+            val sorted = liveTransactions.sortedBy { it.dateTime }
             DateRange(
                 earliest = sorted.first().dateTime.toString(),
                 latest = sorted.last().dateTime.toString()
@@ -229,7 +241,7 @@ class BackupExporter @Inject constructor(
                 device = "${Build.MANUFACTURER} ${Build.MODEL}",
                 androidVersion = Build.VERSION.SDK_INT,
                 statistics = BackupStatistics(
-                    totalTransactions = transactions.size,
+                    totalTransactions = liveTransactions.size,
                     totalCategories = categories.size,
                     totalCards = cards.size,
                     totalSubscriptions = subscriptions.size,
@@ -302,6 +314,17 @@ class BackupExporter @Inject constructor(
                     HomeWidgetPreferences(
                         order = order.map { it.name },
                         hidden = hidden.map { it.name }
+                    )
+                } else null,
+                accounts = if (config.includeTransactionalData) {
+                    val accountPrefs = context.getSharedPreferences("account_prefs", Context.MODE_PRIVATE)
+                    AccountPreferences(
+                        mainAccount = accountPrefs.getString("main_account", null),
+                        hiddenAccounts = accountPrefs.getStringSet("hidden_accounts", emptySet())
+                            ?.toList()
+                            ?.sorted()
+                            ?: emptyList(),
+                        baseCurrency = userPreferencesRepository.baseCurrency.first()
                     )
                 } else null,
                 currency = if (config.includeAppPreferences) {

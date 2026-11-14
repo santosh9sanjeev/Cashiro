@@ -66,6 +66,9 @@ fun TransactionEntity.sanitize(): TransactionEntity {
         accountNumber = accountNumber,
         balanceAfter = balanceAfter,
         transactionHash = transactionHash ?: "",
+        // The UPI/UTR reference is what recognises the same payment arriving
+        // twice; dropping it let a restored transaction be duplicated.
+        reference = reference,
         isRecurring = isRecurring,
         isDeleted = isDeleted,
         createdAt = createdAt ?: LocalDateTime.now(),

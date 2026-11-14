@@ -2,14 +2,14 @@ package com.ritesh.cashiro.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
 import com.ritesh.cashiro.data.preferences.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,32 +36,18 @@ class CurrencyRepository @Inject constructor(
     }
 
     /**
-     * Returns the currency of the "Main Account" if set, otherwise falls back to UserPreferences.
-     * This flow is reactive to both preference changes (selecting a new main account)
-     * and database changes (updating the currency of the currently selected main account).
+     * The currency amounts are shown in unless the user picked one in settings:
+     * the main account's currency, or, with no main account, the currency the
+     * user's accounts are kept in. Reacts to choosing a new main account and to
+     * any account changing currency.
      */
-    val baseCurrencyCode: Flow<String> = mainAccountKeyFlow.flatMapLatest { mainAccountKey ->
-        if (mainAccountKey == null) {
-            userPreferencesRepository.baseCurrency
-        } else {
-            val parts = mainAccountKey.split("_")
-            if (parts.size >= 2) {
-                val bankName = parts.subList(0, parts.size - 1).joinToString("_")
-                val last4 = parts.last()
-                
-                // Observe the specific account in the database
-                accountBalanceRepository.getLatestBalanceFlow(bankName, last4).flatMapLatest { account ->
-                    if (account != null) {
-                        kotlinx.coroutines.flow.flowOf(account.currency)
-                    } else {
-                        userPreferencesRepository.baseCurrency
-                    }
-                }
-            } else {
-                userPreferencesRepository.baseCurrency
-            }
-        }
-    }
+    val baseCurrencyCode: Flow<String> = combine(
+        mainAccountKeyFlow,
+        accountBalanceRepository.getAllLatestBalances(),
+        userPreferencesRepository.baseCurrency
+    ) { mainAccountKey, accounts, preferred ->
+        resolveBaseCurrency(mainAccountKey, accounts, preferred)
+    }.distinctUntilChanged()
 
     /**
      * Returns the effective base currency, overriding with:
@@ -82,4 +68,36 @@ class CurrencyRepository @Inject constructor(
             else -> baseCode
         }
     }
+}
+
+/**
+ * Picks the currency to show amounts in when the user has not chosen one.
+ *
+ * The main account's currency when a main account is set and still exists.
+ * Otherwise the currency most of the user's own accounts are in. The stored
+ * preference defaults to INR and is only written alongside a main account, so
+ * falling back to it showed every income, expense and net figure in rupees for
+ * someone whose accounts are all in another currency. It is used only when
+ * there is no account to go by, or to settle a tie.
+ */
+internal fun resolveBaseCurrency(
+    mainAccountKey: String?,
+    accounts: List<AccountBalanceEntity>,
+    preferred: String
+): String {
+    val main = mainAccountKey?.let { key ->
+        accounts.firstOrNull { "${it.bankName}_${it.accountLast4}" == key }
+    }
+    if (main != null) return main.currency
+
+    // Bank accounts and cards decide; the built-in cash wallet keeps whatever
+    // currency it was created with and should not outvote them.
+    val pool = accounts.filterNot { it.isWallet }.ifEmpty { accounts }
+    if (pool.isEmpty()) return preferred
+
+    val counts = pool.groupingBy { it.currency.uppercase() }.eachCount()
+    val most = counts.values.max()
+    val leaders = counts.filterValues { it == most }.keys
+    if (preferred.uppercase() in leaders) return preferred
+    return pool.first { it.currency.uppercase() in leaders }.currency
 }

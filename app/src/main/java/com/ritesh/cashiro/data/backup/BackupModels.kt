@@ -193,7 +193,27 @@ data class PreferencesSnapshot(
     val homeWidgets: HomeWidgetPreferences? = null,
 
     @SerializedName("currency")
-    val currency: CurrencyPreferences? = null
+    val currency: CurrencyPreferences? = null,
+
+    @SerializedName("accounts")
+    val accounts: AccountPreferences? = null
+)
+
+/**
+ * Account settings kept outside the database: which account is the main one,
+ * which accounts are hidden, and the currency stored as the app-wide default.
+ * Without them a restore brought every hidden account back into the totals and
+ * lost the main account.
+ */
+data class AccountPreferences(
+    @SerializedName("main_account")
+    val mainAccount: String? = null,
+
+    @SerializedName("hidden_accounts")
+    val hiddenAccounts: List<String> = emptyList(),
+
+    @SerializedName("base_currency")
+    val baseCurrency: String? = null
 )
 
 /**

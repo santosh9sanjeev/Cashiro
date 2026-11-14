@@ -476,6 +476,8 @@ fun ManageAccountsScreen(
                         items(visibleCreditCards) { card ->
                             CreditCardItem(
                                 card = card,
+                                linkedCards = uiState.linkedCards[card.accountLast4] ?: emptyList(),
+                                onUnlinkCard = { cardId -> manageAccountsViewModel.unlinkCard(cardId) },
                                 isHidden = false,
                                 isMain = uiState.mainAccountKey == "${card.bankName}_${card.accountLast4}",
                                 onSetAsMain = {
@@ -634,6 +636,8 @@ fun ManageAccountsScreen(
                             items(hiddenCreditCards) { card ->
                                 CreditCardItem(
                                     card = card,
+                                    linkedCards = uiState.linkedCards[card.accountLast4] ?: emptyList(),
+                                    onUnlinkCard = { cardId -> manageAccountsViewModel.unlinkCard(cardId) },
                                     isHidden = true,
                                     isMain = uiState.mainAccountKey == "${card.bankName}_${card.accountLast4}",
                                     onSetAsMain = {
@@ -992,14 +996,20 @@ fun ManageAccountsScreen(
 
     if (selectedCardForLink != null) {
         val card = selectedCardForLink!!
-        val matchingAccounts = uiState.accounts.filter { it.bankName == card.bankName }
+        // Any bank account or credit card can take the card, not only accounts
+        // that happen to carry the bank name its alerts use: an account set up by
+        // hand is often named differently. The bank's own accounts come first.
+        val matchingAccounts = uiState.accounts
+            .filter { !it.isWallet }
+            .filterNot { it.bankName == card.bankName && it.accountLast4 == card.cardLast4 }
+            .sortedByDescending { it.bankName == card.bankName }
         LinkCardDialog(
             card = card,
             accounts = matchingAccounts,
             onDismiss = { selectedCardForLink = null },
-            onConfirm = { accountLast4 ->
+            onConfirm = { account ->
                 scope.launch {
-                    manageAccountsViewModel.linkCardToAccount(card.id, accountLast4)
+                    manageAccountsViewModel.linkCardToAccount(card.id, account.bankName, account.accountLast4)
                     selectedCardForLink = null
                 }
             },
@@ -1014,6 +1024,8 @@ fun ManageAccountsScreen(
 @Composable
 private fun CreditCardItem(
     card: AccountBalanceEntity,
+    linkedCards: List<CardEntity> = emptyList(),
+    onUnlinkCard: (cardId: Long) -> Unit = {},
     isHidden: Boolean,
     onToggleVisibility: () -> Unit,
     onUpdateBalance: () -> Unit,
@@ -1106,6 +1118,7 @@ private fun CreditCardItem(
             }
             Spacer(modifier = Modifier.height(8.dp))
         }
+        LinkedCardsSection(linkedCards = linkedCards, onUnlinkCard = onUnlinkCard)
     }
 }
 
@@ -1141,77 +1154,87 @@ private fun AccountItem(
             onMergeAccount = onMergeAccount
         ) {
 
-            // Linked Cards Section
-            if (linkedCards.isNotEmpty()) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    Text(
-                        text = stringResource(R.string.linked_cards_label),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = Spacing.xs)
-                    )
-                    linkedCards.forEach { card ->
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = Spacing.xs),
-                            color = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 2.dp,
-                            shadowElevation = 2.dp,
-                            shape = MaterialTheme.shapes.medium
+            LinkedCardsSection(linkedCards = linkedCards, onUnlinkCard = onUnlinkCard)
+        }
+    }
+}
+
+/** The cards whose transactions are booked to this account, each with a way to unlink it. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun LinkedCardsSection(
+    linkedCards: List<CardEntity>,
+    onUnlinkCard: (cardId: Long) -> Unit
+) {
+    // Linked Cards Section
+    if (linkedCards.isNotEmpty()) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text(
+                text = stringResource(R.string.linked_cards_label),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = Spacing.xs)
+            )
+            linkedCards.forEach { card ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = Spacing.xs),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    shadowElevation = 2.dp,
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(Spacing.md),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(Spacing.md),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
+                            Text(
+                                "💳",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Column {
+                                Row(modifier = Modifier.padding(start = Spacing.sm),
+                                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
                                 ) {
                                     Text(
-                                        "💳",
+                                        text = "**** **** **** ${card.cardLast4}",
                                         style = MaterialTheme.typography.bodyMedium
                                     )
-                                    Column {
-                                        Row(modifier = Modifier.padding(start = Spacing.sm),
-                                            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
-                                        ) {
-                                            Text(
-                                                text = "**** **** **** ${card.cardLast4}",
-                                                style = MaterialTheme.typography.bodyMedium
-                                            )
-                                            if (!card.isActive
-                                            ) {
-                                                Text(
-                                                    text = stringResource(R.string.label_inactive),
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.error
-                                                )
-                                            }
-                                        }
+                                    if (!card.isActive
+                                    ) {
+                                        Text(
+                                            text = stringResource(R.string.label_inactive),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
                                     }
                                 }
-                                IconButton(
-                                    onClick = { onUnlinkCard(card.id) },
-                                    colors = IconButtonDefaults.iconButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surface,
-                                        contentColor = MaterialTheme.colorScheme.onSurface
-                                    ),
-                                    shapes = IconButtonDefaults.shapes(),
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.LinkOff,
-                                        contentDescription = stringResource(R.string.unlink_card_desc),
-                                        modifier = Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
                             }
+                        }
+                        IconButton(
+                            onClick = { onUnlinkCard(card.id) },
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.LinkOff,
+                                contentDescription = stringResource(R.string.unlink_card_desc),
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -1422,11 +1445,11 @@ private fun LinkCardDialog(
     card: CardEntity,
     accounts: List<AccountBalanceEntity>,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
+    onConfirm: (AccountBalanceEntity) -> Unit,
     blurEffects: Boolean = LocalBlurEffects.current,
     hazeState: HazeState = remember { HazeState() }
 ) {
-    var selectedAccount by remember { mutableStateOf<String?>(null) }
+    var selectedAccount by remember { mutableStateOf<AccountBalanceEntity?>(null) }
     val containerColor = MaterialTheme.colorScheme.surfaceContainerLow
 
     AlertDialog(
@@ -1468,9 +1491,11 @@ private fun LinkCardDialog(
                         modifier = Modifier.padding(bottom = Spacing.xs)
                     )
                     accounts.forEach { account ->
-                        val isSelected = selectedAccount == account.accountLast4
+                        val isSelected = selectedAccount?.let {
+                            it.bankName == account.bankName && it.accountLast4 == account.accountLast4
+                        } == true
                         Surface(
-                            onClick = { selectedAccount = account.accountLast4 },
+                            onClick = { selectedAccount = account },
                             modifier = Modifier.fillMaxWidth(),
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(0.3f)
                                    else MaterialTheme.colorScheme.surface.copy(0.5f),
@@ -1494,9 +1519,18 @@ private fun LinkCardDialog(
                                 )
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "••${account.accountLast4}",
+                                        text = "${account.bankName} ••${account.accountLast4}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = if (account.isCreditCard) {
+                                            stringResource(R.string.credit_card)
+                                        } else {
+                                            stringResource(R.string.section_bank_accounts)
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
                                         text = CurrencyFormatter.formatCurrency(

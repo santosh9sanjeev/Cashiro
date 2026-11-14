@@ -10,12 +10,14 @@ import com.ritesh.cashiro.data.mapper.toEntityType
 import com.ritesh.cashiro.data.currency.CurrencyConverter
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.CardRepository
+import com.ritesh.cashiro.data.repository.linkedAccountOf
 import com.ritesh.cashiro.utils.PiiRedactor
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.first
 
 @Singleton
 class BalanceUpdateProcessor @Inject constructor(
@@ -27,11 +29,20 @@ class BalanceUpdateProcessor @Inject constructor(
         private const val TAG = "BalanceUpdateProcessor"
     }
 
+    /** The account an alert was booked to. */
+    data class BookedAccount(val bankName: String, val accountLast4: String)
+
+    /**
+     * Books an alert's effect on the account it belongs to and says which account
+     * that was, or null when nothing was booked. For a card linked to an account
+     * that is the linked account, which can differ from the account the saved
+     * transaction names; the caller files the transaction under it too.
+     */
     suspend fun process(
         parsedTransaction: ParsedTransaction,
         entity: TransactionEntity,
         rowId: Long
-    ) {
+    ): BookedAccount? {
         // The saved transaction carries the account it was attributed to, which can
         // differ from the parser's raw values: a partial number expanded to the
         // account it belongs to, or a bank name matched to the account the user set
@@ -41,10 +52,13 @@ class BalanceUpdateProcessor @Inject constructor(
         val parsedAccountLast4 = parsedTransaction.accountLast4?.takeIf { it.isNotBlank() }
         val resolvedAccountLast4 = entity.accountNumber?.takeIf { it.isNotBlank() }
         val fallbackAccountLast4 = resolvedAccountLast4 ?: parsedAccountLast4
-        if (fallbackAccountLast4 == null) return
+        if (fallbackAccountLast4 == null) return null
 
         val isFromCard = parsedTransaction.isFromCard
 
+        // Where the money moved. A linked card books to the account it is linked
+        // to, which may be filed under a different bank name than the alert's.
+        var targetBankName = bankName
         val targetAccountLast4: String? = if (isFromCard) {
             var card = cardRepository.getCard(bankName, fallbackAccountLast4)
             // How the user set this number up outranks how the card was first
@@ -86,14 +100,19 @@ class BalanceUpdateProcessor @Inject constructor(
                     )
                 )
 
+                // A card linked to a bank account draws on it; one linked to a credit
+                // card account is charged to it. An unlinked card (or one whose link
+                // points nowhere) books to its own number, the account the user sees
+                // for that card. Returning null here once dropped the update entirely.
+                val linked = linkedAccountOf(card, accountBalanceRepository.getAllLatestBalances().first())
                 when {
-                    card.cardType == CardType.CREDIT -> fallbackAccountLast4
+                    linked != null -> {
+                        targetBankName = linked.bankName
+                        linked.accountLast4
+                    }
+                    // Linked to an account that does not exist (yet): book under
+                    // the link, as before.
                     card.cardType == CardType.DEBIT && card.accountLast4 != null -> card.accountLast4
-                    // An unlinked card used to return null here, which dropped the
-                    // balance update silently: the transaction was saved and listed
-                    // against the account, but the account itself never moved and
-                    // kept reporting zero. Attribute it to the card's own number
-                    // instead, which is the account the user sees for that card.
                     else -> fallbackAccountLast4
                 }
             }
@@ -101,19 +120,19 @@ class BalanceUpdateProcessor @Inject constructor(
             fallbackAccountLast4
         }
 
-        if (targetAccountLast4 != null) {
-            val isCreditCard = (parsedTransaction.type.toEntityType() == TransactionType.CREDIT) ||
-                    fallbackAccountLast4.let {
-                        cardRepository.getCard(bankName, it)?.cardType
-                    } == CardType.CREDIT
+        if (targetAccountLast4 == null) return null
+
+        run {
+            val targetAccount = accountBalanceRepository.getLatestBalance(targetBankName, targetAccountLast4)
+            val isCreditCard = targetAccount?.isCreditCard
+                ?: ((parsedTransaction.type.toEntityType() == TransactionType.CREDIT) ||
+                    cardRepository.getCard(bankName, fallbackAccountLast4)?.cardType == CardType.CREDIT)
 
             // A transaction can arrive in a different currency from the account it
             // belongs to (a card used abroad, for instance). Convert into the
             // account's own currency, otherwise the raw figure is subtracted as
             // though 30 USD and 30 AED were the same amount of money.
-            val accountCurrency = accountBalanceRepository
-                .getLatestBalance(bankName, targetAccountLast4)
-                ?.currency ?: parsedTransaction.currency
+            val accountCurrency = targetAccount?.currency ?: parsedTransaction.currency
             val amountInAccountCurrency = currencyConversionService.convertAmount(
                 amount = parsedTransaction.amount,
                 fromCurrency = parsedTransaction.currency,
@@ -121,7 +140,7 @@ class BalanceUpdateProcessor @Inject constructor(
             )
 
             accountBalanceRepository.insertTransactionBalance(
-                bankName = bankName,
+                bankName = targetBankName,
                 accountLast4 = targetAccountLast4,
                 amount = amountInAccountCurrency,
                 // The saved type, after rules: a rule that relabels an alert has
@@ -143,6 +162,7 @@ class BalanceUpdateProcessor @Inject constructor(
                 Log.d(TAG, "Saved balance update from SMS transaction")
             }
         }
+        return BookedAccount(targetBankName, targetAccountLast4)
     }
 
     private fun sanitizeSmsSource(parsedTransaction: ParsedTransaction): String {

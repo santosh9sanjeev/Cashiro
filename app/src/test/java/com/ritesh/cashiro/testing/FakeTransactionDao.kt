@@ -38,6 +38,8 @@ internal class FakeTransactionDao : TransactionDao {
         stored.firstOrNull { it.transactionHash == transactionHash }
 
     override fun getAllTransactions(): Flow<List<TransactionEntity>> = flowOf(emptyList())
+
+    override suspend fun getAllTransactionsIncludingDeleted(): List<TransactionEntity> = stored.toList()
     override fun getTransactionCount(): Flow<Int> = flowOf(0)
     override suspend fun getTransactionById(transactionId: Long): TransactionEntity? = byId(transactionId)
     override fun getTransactionsBetweenDates(

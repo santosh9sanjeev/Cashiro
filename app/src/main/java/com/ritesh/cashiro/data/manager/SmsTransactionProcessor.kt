@@ -207,7 +207,28 @@ class SmsTransactionProcessor @Inject constructor(
                 }
 
                 // Process balance updates
-                balanceUpdateProcessor.process(parsedTransaction, finalEntityForInsert, rowId)
+                val booked = balanceUpdateProcessor.process(parsedTransaction, finalEntityForInsert, rowId)
+
+                // A linked card's alert is booked to the account the card is linked
+                // to. File the transaction there as well, so it is listed and counted
+                // under that account and not under the card's own number.
+                if (booked != null &&
+                    (booked.bankName != finalEntityForInsert.bankName ||
+                        booked.accountLast4 != finalEntityForInsert.accountNumber)
+                ) {
+                    transactionRepository.updateTransaction(
+                        finalEntityForInsert.copy(
+                            id = rowId,
+                            bankName = booked.bankName,
+                            accountNumber = booked.accountLast4,
+                            fromAccount = if (finalEntityForInsert.fromAccount == finalEntityForInsert.accountNumber) {
+                                booked.accountLast4
+                            } else {
+                                finalEntityForInsert.fromAccount
+                            }
+                        )
+                    )
+                }
 
                 return ProcessingResult(true, transactionId = rowId)
             } else {

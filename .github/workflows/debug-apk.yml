@@ -45,8 +45,32 @@ jobs:
       - name: Register Kotlin error matcher
         run: echo "::add-matcher::.github/kotlin-problem-matcher.json"
 
-      # Blocking: the behaviour fixed in this branch. A failure here means a fix
-      # does not do what it claims, so the APK must not be built.
+      - name: Build standard debug APK
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx5G
+        run: ./gradlew assembleStandardDebug --stacktrace
+
+      - name: Collect APKs
+        run: |
+          mkdir -p artifacts
+          # The build splits by ABI, which produces five APKs. Only ship the two
+          # worth installing: arm64 for any modern phone, universal as a fallback.
+          # Shipping all five made the artifact zip several hundred MB.
+          for pattern in "*arm64-v8a-debug.apk" "*universal-debug.apk"; do
+            find app/build/outputs/apk/standard/debug -name "$pattern" -exec cp {} artifacts/ \;
+          done
+          ls -lh artifacts/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cashiro-debug-apk
+          path: artifacts/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      # The behaviour fixed in this branch. Runs after the APK is uploaded so the
+      # APK is available as soon as it builds; a failure here still fails the run.
       - name: Run balance tests
         run: >-
           ./gradlew :app:testStandardDebugUnitTest --stacktrace
@@ -55,6 +79,8 @@ jobs:
           --tests "com.ritesh.cashiro.domain.usecase.AddTransactionUseCaseTest"
           --tests "com.ritesh.cashiro.data.repository.TransactionEditRebalanceTest"
           --tests "com.ritesh.cashiro.data.repository.AccountAttributionTest"
+          --tests "com.ritesh.cashiro.data.repository.TransactionDeleteTest"
+          --tests "com.ritesh.cashiro.data.repository.DisplayCurrencyAndCardLinkTest"
 
       # Non-blocking: the rest of the suite was never run in CI before, so any
       # failure here is pre-existing and should not withhold the APK.
@@ -100,27 +126,3 @@ jobs:
           path: app/build/reports/tests/
           retention-days: 7
           if-no-files-found: ignore
-
-      - name: Build standard debug APK
-        env:
-          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx5G
-        run: ./gradlew assembleStandardDebug --stacktrace
-
-      - name: Collect APKs
-        run: |
-          mkdir -p artifacts
-          # The build splits by ABI, which produces five APKs. Only ship the two
-          # worth installing: arm64 for any modern phone, universal as a fallback.
-          # Shipping all five made the artifact zip several hundred MB.
-          for pattern in "*arm64-v8a-debug.apk" "*universal-debug.apk"; do
-            find app/build/outputs/apk/standard/debug -name "$pattern" -exec cp {} artifacts/ \;
-          done
-          ls -lh artifacts/
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: cashiro-debug-apk
-          path: artifacts/*.apk
-          retention-days: 30
-          if-no-files-found: error

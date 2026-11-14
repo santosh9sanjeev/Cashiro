@@ -12,6 +12,8 @@ import com.ritesh.cashiro.data.currency.CurrencyConversionService
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.CardRepository
 import com.ritesh.cashiro.data.repository.TransactionRepository
+import com.ritesh.cashiro.data.repository.isAwaitingLink
+import com.ritesh.cashiro.data.repository.linkedAccountOf
 import com.ritesh.cashiro.utils.CurrencyFormatter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -149,7 +151,10 @@ constructor(
 
     private fun loadCards() {
         viewModelScope.launch {
-            cardRepository.getAllCards().collect { allCards ->
+            combine(
+                cardRepository.getAllCards(),
+                accountBalanceRepository.getAllLatestBalances()
+            ) { cards, accounts -> cards to accounts }.collect { (allCards, accounts) ->
                 // Re-filing a card writes to the table, which emits again with the
                 // corrected list, so this stale one is not worth grouping.
                 var refiled = false
@@ -158,19 +163,20 @@ constructor(
                 }
                 if (refiled) return@collect
 
-                // Group cards by linked account
+                // Group cards under the account they are linked to - a bank account
+                // or a credit card - and list the rest as waiting for a link.
                 val linkedCardsMap = mutableMapOf<String, MutableList<CardEntity>>()
                 val orphaned = mutableListOf<CardEntity>()
 
                 for (card in allCards) {
+                    val linkedTo = linkedAccountOf(card, accounts)
                     when {
-                        card.cardType == CardType.DEBIT && card.accountLast4 != null -> {
-                            linkedCardsMap.getOrPut(card.accountLast4) { mutableListOf() }.add(card)
+                        linkedTo != null -> {
+                            linkedCardsMap.getOrPut(linkedTo.accountLast4) { mutableListOf() }.add(card)
                         }
-                        card.cardType == CardType.DEBIT && card.accountLast4 == null -> {
-                            orphaned.add(card)
-                        }
-                    // Credit cards are not orphaned, they're standalone
+                        // A link to an account that is gone counts as no link.
+                        isAwaitingLink(card.copy(accountLast4 = null), accounts) -> orphaned.add(card)
+                        // Otherwise it is a credit card standing on its own.
                     }
                 }
 
@@ -492,93 +498,117 @@ constructor(
         _uiState.update { it.copy(balanceHistory = emptyList()) }
     }
 
-    fun linkCardToAccount(cardId: Long, accountLast4: String) {
+    /**
+     * Links a card to the account it belongs to, so its alerts are booked there.
+     *
+     * The account decides what the card is: linked to a credit card account it is
+     * that credit card's plastic and its spending is owed on the card; linked to
+     * a bank account it is a debit card drawing on it. The card's earlier
+     * transactions, booked to its own number while it was unlinked, move to the
+     * account as well, so the account holds all of the card's spending rather
+     * than only what comes after linking.
+     */
+    fun linkCardToAccount(cardId: Long, accountBankName: String, accountLast4: String) {
         viewModelScope.launch {
             try {
-                Log.d(
-                        "ManageAccountsViewModel",
-                        "Starting to link card $cardId to account $accountLast4"
+                val card = cardRepository.getCardById(cardId) ?: return@launch
+                val target = accountBalanceRepository.getLatestBalance(accountBankName, accountLast4)
+                if (target == null) {
+                    _uiState.update { it.copy(errorMessage = "That account no longer exists") }
+                    return@launch
+                }
+
+                // A card whose own number is a credit card account is that credit
+                // card. It keeps its own balance rather than being booked elsewhere.
+                val ownAccount = accountBalanceRepository.getLatestBalance(card.bankName, card.cardLast4)
+                if (ownAccount?.isCreditCard == true) {
+                    fileAsCreditCardIfNeeded(card)
+                    _uiState.update {
+                        it.copy(
+                            errorMessage = if (target.isCreditCard) {
+                                "This card already has its own credit card account. Merge the two accounts instead."
+                            } else {
+                                "This is a credit card, so it keeps its own balance"
+                            }
+                        )
+                    }
+                    return@launch
+                }
+
+                val linkedCard = card.copy(
+                    cardType = if (target.isCreditCard) CardType.CREDIT else CardType.DEBIT,
+                    accountLast4 = target.accountLast4,
+                    updatedAt = LocalDateTime.now()
                 )
+                cardRepository.updateCard(linkedCard)
 
-                // Get card info first to know if there's a balance to copy
-                val card = cardRepository.getCardById(cardId)
+                val moved = moveCardTransactions(card, target)
 
-                // A credit card keeps its own balance. Linked to a bank account, its
-                // spending - and its reported balance, copied below - would land on
-                // that account instead.
-                if (card != null && fileAsCreditCardIfNeeded(card)) {
-                    _uiState.update {
-                        it.copy(successMessage = "This is a credit card, so it keeps its own balance")
-                    }
-                    loadCards()
-                    return@launch
-                }
-                val targetAccount = _uiState.value.accounts.firstOrNull {
-                    it.accountLast4 == accountLast4 && it.bankName == card?.bankName
-                }
-                if (targetAccount?.isCreditCard == true && accountLast4 != card?.cardLast4) {
-                    _uiState.update {
-                        it.copy(errorMessage = "A card can't draw from a credit card account")
-                    }
-                    return@launch
-                }
-
-                val hasBalance = card?.lastBalance != null
-
-                // Link the card to the account
-                cardRepository.linkCardToAccount(cardId, accountLast4)
-
-                // If card had a balance, copy it to the account
-                if (card != null && hasBalance) {
+                // A debit card's alert reports the balance of the account it draws
+                // on, so the last one seen is that account's balance - but only when
+                // no transaction was moved over, since moving them already brings the
+                // account up to date.
+                val lastBalance = card.lastBalance
+                if (moved == 0 && !target.isCreditCard && lastBalance != null) {
                     try {
-                        val insertedId =
-                                accountBalanceRepository.insertBalanceUpdate(
-                                        bankName = card.bankName,
-                                        accountLast4 = accountLast4,
-                                        balance = card.lastBalance!!,
-                                        timestamp = card.lastBalanceDate ?: LocalDateTime.now(),
-                                        smsSource = card.lastBalanceSource,
-                                        sourceType = "CARD_LINK"
-                                )
-                        Log.d(
-                                "ManageAccountsViewModel",
-                                "Balance copied to account. Insert ID: $insertedId"
+                        accountBalanceRepository.insertBalanceUpdate(
+                            bankName = target.bankName,
+                            accountLast4 = target.accountLast4,
+                            balance = lastBalance,
+                            timestamp = card.lastBalanceDate ?: LocalDateTime.now(),
+                            smsSource = card.lastBalanceSource,
+                            sourceType = "CARD_LINK",
+                            currency = target.currency
                         )
-
-                        // Show success message with balance
-                        val message =
-                                "Card linked successfully. Balance updated to ${CurrencyFormatter.formatCurrency(card.lastBalance)}"
-                        _uiState.update { it.copy(successMessage = message) }
                     } catch (e: Exception) {
-                        Log.e(
-                                "ManageAccountsViewModel",
-                                "Failed to copy balance: ${e.message}",
-                                e
-                        )
-                        // Still show success for linking, but note the balance issue
-                        _uiState.update {
-                            it.copy(
-                                    successMessage =
-                                            "Card linked successfully (balance update failed)"
-                            )
-                        }
+                        Log.e("ManageAccountsViewModel", "Failed to copy balance: ${e.message}", e)
                     }
-                } else {
-                    // No balance to copy, just show link success
-                    _uiState.update { it.copy(successMessage = "Card linked successfully") }
                 }
+
+                val accountLabel = "${target.bankName} ••${target.accountLast4}"
+                val message = when (moved) {
+                    0 -> "Card linked to $accountLabel"
+                    1 -> "Card linked. 1 earlier transaction moved to $accountLabel"
+                    else -> "Card linked. $moved earlier transactions moved to $accountLabel"
+                }
+                _uiState.update { it.copy(successMessage = message) }
 
                 // Clear message after delay
                 delay(3000)
                 _uiState.update { it.copy(successMessage = null) }
 
-                loadCards()
                 loadAccounts()
             } catch (e: Exception) {
                 Log.e("ManageAccountsViewModel", "Failed to link card", e)
                 _uiState.update { it.copy(errorMessage = "Failed to link card: ${e.message}") }
             }
         }
+    }
+
+    /**
+     * Re-files the transactions booked to a card's own number under [account],
+     * moving their effect on the balances with them. Returns how many moved.
+     */
+    private suspend fun moveCardTransactions(card: CardEntity, account: AccountBalanceEntity): Int {
+        val transactions = transactionRepository
+            .getTransactionsByAccount(card.bankName, card.cardLast4)
+            .first()
+            .filter { it.bankName == card.bankName && it.accountNumber == card.cardLast4 && !it.isDeleted }
+        for (transaction in transactions) {
+            val moved = transaction.copy(
+                bankName = account.bankName,
+                accountNumber = account.accountLast4,
+                fromAccount = if (transaction.fromAccount == card.cardLast4) {
+                    account.accountLast4
+                } else {
+                    transaction.fromAccount
+                },
+                updatedAt = LocalDateTime.now()
+            )
+            transactionRepository.updateTransaction(moved)
+            transactionRepository.rebalanceAfterEdit(transaction, moved)
+        }
+        return transactions.size
     }
 
     fun unlinkCard(cardId: Long) {

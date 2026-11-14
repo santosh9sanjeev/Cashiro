@@ -49,4 +49,8 @@ interface RuleApplicationDao {
 
     @Query("DELETE FROM rule_applications")
     suspend fun deleteAllApplications()
+
+    /** Every application, for a backup. */
+    @Query("SELECT * FROM rule_applications ORDER BY applied_at DESC")
+    suspend fun getAllApplications(): List<RuleApplicationEntity>
 }

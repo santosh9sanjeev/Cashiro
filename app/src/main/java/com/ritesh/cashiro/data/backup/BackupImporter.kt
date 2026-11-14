@@ -14,6 +14,7 @@ import com.ritesh.cashiro.data.preferences.AppFont
 import com.ritesh.cashiro.data.preferences.ThemeStyle
 import com.ritesh.cashiro.data.preferences.AccentColor
 import com.ritesh.cashiro.data.preferences.AppIcon
+import com.ritesh.cashiro.data.preferences.HomeWidget
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -173,16 +174,21 @@ class BackupImporter @Inject constructor(
         
         return database.withTransaction {
             try {
-                // Clear existing data
+                // Clear existing data. The lend/borrow ledger goes first: its
+                // entries point at transactions and people, and restoring them by id
+                // over rows that were still there replaced (and cascade-deleted)
+                // unrelated entries.
+                database.lendBorrowDao().clearTransactions()
+                database.lendBorrowDao().clearPersons()
                 database.transactionDao().deleteAllTransactions()
                 database.categoryDao().deleteAllCategories()
                 database.cardDao().deleteAllCards()
                 database.accountBalanceDao().deleteAllBalances()
                 database.subscriptionDao().deleteAllSubscriptions()
                 database.merchantMappingDao().deleteAllMappings()
-                database.unrecognizedSmsDao().deleteAll()
-                database.merchantMappingDao().deleteAllMappings()
-                database.unrecognizedSmsDao().deleteAll()
+                // Removed outright: only marking them deleted left the same rows in
+                // place, so restoring them was ignored and they all stayed hidden.
+                database.unrecognizedSmsDao().deleteAllPermanently()
                 database.chatDao().deleteAllMessages()
                 database.budgetDao().deleteAllBudgets()
                 database.subcategoryDao().getAllSubcategories().first().forEach { 
@@ -247,9 +253,13 @@ class BackupImporter @Inject constructor(
                     database.ruleDao().insertRule(rule)
                 }
 
-                backup.database.ruleApplications.forEach { app ->
-                    database.ruleApplicationDao().insertApplication(app)
-                }
+                // Only applications whose transaction and rule were restored: the
+                // table enforces both links, and one orphan aborted the restore.
+                val restoredTransactionIds = backup.database.transactions.map { it.id.toString() }.toSet()
+                val restoredRuleIds = backup.database.rules.map { it.id }.toSet()
+                backup.database.ruleApplications
+                    .filter { it.transactionId in restoredTransactionIds && it.ruleId in restoredRuleIds }
+                    .forEach { app -> database.ruleApplicationDao().insertApplication(app) }
 
                 if (backup.database.webhookProfiles.isNotEmpty()) {
                     val baseCurrency = userPreferencesRepository.baseCurrency.first()
@@ -267,13 +277,13 @@ class BackupImporter @Inject constructor(
                 }
                 
                 // Import preferences
-                importPreferences(backup.preferences)
-                
+                importPreferences(backup.preferences, replace = true)
+
                 ImportResult.Success(
-                    importedTransactions = importedTransactions,
+                    importedTransactions = backup.database.transactions.count { !it.isDeleted },
                     importedCategories = importedCategories,
                     skippedDuplicates = 0,
-                    importedAccounts = backup.database.accountBalances.size
+                    importedAccounts = accountCount(backup)
                 )
             } catch (e: Exception) {
                 throw e
@@ -292,8 +302,11 @@ class BackupImporter @Inject constructor(
         return database.withTransaction {
             try {
                 // Get existing data for duplicate checking
+                // Deleted rows count: a backup transaction the user has since
+                // deleted here must not be inserted again (the insert is ignored,
+                // and its -1 id then broke every link to it).
                 val existingTransactionsMap = database.transactionDao()
-                    .getAllTransactions().first()
+                    .getAllTransactionsIncludingDeleted()
                     .associateBy { it.transactionHash }
                 
                 val existingCategories = database.categoryDao()
@@ -343,8 +356,12 @@ class BackupImporter @Inject constructor(
                         // New transaction, insert it
                         val newTransaction = sanitizedTxn.copy(id = 0)
                         val newId = database.transactionDao().insertTransaction(newTransaction)
-                        transactionIdMap[sanitizedTxn.id] = newId
-                        importedTransactions++
+                        if (newId == -1L) {
+                            skippedDuplicates++
+                        } else {
+                            transactionIdMap[sanitizedTxn.id] = newId
+                            if (!sanitizedTxn.isDeleted) importedTransactions++
+                        }
                     } else {
                         transactionIdMap[sanitizedTxn.id] = existingTxn.id
                         // Transaction exists locally. Should we update it with backup data?
@@ -393,7 +410,7 @@ class BackupImporter @Inject constructor(
                 
                 // Import other entities with duplicate checking
                 importCardsWithMerge(backup.database.cards)
-                importAccountBalancesWithMerge(backup.database.accountBalances)
+                importAccountBalancesWithMerge(backup.database.accountBalances, transactionIdMap)
                 importSubscriptionsWithMerge(backup.database.subscriptions)
                 importMerchantMappingsWithMerge(backup.database.merchantMappings)
                 importBudgetsWithMerge(backup.database.budgets, backup.database.budgetCategoryLimits)
@@ -412,13 +429,13 @@ class BackupImporter @Inject constructor(
                 }
                 
                 // Import preferences (merge with existing)
-                importPreferences(backup.preferences)
-                
+                importPreferences(backup.preferences, replace = false)
+
                 ImportResult.Success(
                     importedTransactions = importedTransactions,
                     importedCategories = importedCategories,
                     skippedDuplicates = skippedDuplicates,
-                    importedAccounts = backup.database.accountBalances.size
+                    importedAccounts = accountCount(backup)
                 )
             } catch (e: Exception) {
                 throw e
@@ -439,8 +456,11 @@ class BackupImporter @Inject constructor(
 
         return database.withTransaction {
             try {
+                // Deleted rows count: a backup transaction the user has since
+                // deleted here must not be inserted again (the insert is ignored,
+                // and its -1 id then broke every link to it).
                 val existingTransactionsMap = database.transactionDao()
-                    .getAllTransactions().first()
+                    .getAllTransactionsIncludingDeleted()
                     .associateBy { it.transactionHash }
 
                 val existingCategories = database.categoryDao()
@@ -488,8 +508,12 @@ class BackupImporter @Inject constructor(
                         if (existingTxn == null) {
                             val newTransaction = sanitizedTxn.copy(id = 0)
                             val newId = database.transactionDao().insertTransaction(newTransaction)
-                            transactionIdMap[sanitizedTxn.id] = newId
-                            importedTransactions++
+                            if (newId == -1L) {
+                                skippedDuplicates++
+                            } else {
+                                transactionIdMap[sanitizedTxn.id] = newId
+                                if (!sanitizedTxn.isDeleted) importedTransactions++
+                            }
                         } else {
                             transactionIdMap[sanitizedTxn.id] = existingTxn.id
                             val shouldUpdate = when {
@@ -529,7 +553,7 @@ class BackupImporter @Inject constructor(
                     importCardsWithMerge(backup.database.cards)
                 }
                 if (filter.includeAccountBalances) {
-                    importAccountBalancesWithMerge(backup.database.accountBalances)
+                    importAccountBalancesWithMerge(backup.database.accountBalances, transactionIdMap)
                 }
                 if (filter.includeSubscriptions) {
                     importSubscriptionsWithMerge(backup.database.subscriptions)
@@ -547,7 +571,7 @@ class BackupImporter @Inject constructor(
                     importExchangeRatesWithMerge(backup.database.exchangeRates)
                 }
                 if (filter.includePreferences) {
-                    importPreferences(backup.preferences)
+                    importPreferences(backup.preferences, replace = false)
                 }
 
                 ImportResult.Success(
@@ -582,13 +606,27 @@ class BackupImporter @Inject constructor(
     /**
      * Import account balances with duplicate checking
      */
-    private suspend fun importAccountBalancesWithMerge(balances: List<AccountBalanceEntity>) {
-        // For balances, we'll import all as they represent historical data
+    private suspend fun importAccountBalancesWithMerge(
+        balances: List<AccountBalanceEntity>,
+        transactionIdMap: Map<Long, Long> = emptyMap()
+    ) {
+        // For balances, we'll import all as they represent historical data. A row
+        // keeps its link to the transaction that wrote it under that transaction's
+        // new id; left on the old id it pointed at an unrelated transaction, and
+        // editing or deleting either one then moved the wrong balance.
         balances.forEach { balance ->
-            val newBalance = balance.sanitize().copy(id = 0)
+            val sanitized = balance.sanitize()
+            val newBalance = sanitized.copy(
+                id = 0,
+                transactionId = sanitized.transactionId?.let { transactionIdMap[it] }
+            )
             database.accountBalanceDao().insertBalance(newBalance)
         }
     }
+
+    /** How many accounts a backup holds: its balance rows are their history. */
+    private fun accountCount(backup: CashiroBackup): Int =
+        backup.database.accountBalances.distinctBy { it.bankName to it.accountLast4 }.size
     
     /**
      * Import subscriptions with duplicate checking
@@ -707,7 +745,7 @@ class BackupImporter @Inject constructor(
     /**
      * Import user preferences
      */
-    private suspend fun importPreferences(preferences: PreferencesSnapshot) {
+    private suspend fun importPreferences(preferences: PreferencesSnapshot, replace: Boolean) {
         // Theme preferences
         preferences.theme.isDarkThemeEnabled?.let {
             userPreferencesRepository.updateDarkTheme(it)
@@ -844,6 +882,42 @@ class BackupImporter @Inject constructor(
             }
             currencyPrefs.customCurrencies.forEach { customCurrency ->
                 userPreferencesRepository.addCustomCurrency(customCurrency)
+            }
+        }
+
+        // Home screen layout
+        preferences.homeWidgets?.let { widgets ->
+            val order = widgets.order.mapNotNull { name -> runCatching { HomeWidget.valueOf(name) }.getOrNull() }
+            val hidden = widgets.hidden.mapNotNull { name -> runCatching { HomeWidget.valueOf(name) }.getOrNull() }
+            if (order.isNotEmpty()) userPreferencesRepository.updateHomeWidgetsOrder(order)
+            userPreferencesRepository.updateHiddenHomeWidgets(hidden.toSet())
+        }
+
+        // Main and hidden accounts. A full restore takes them as they were; a merge
+        // keeps this device's main account and adds the backup's hidden accounts.
+        preferences.accounts?.let { accounts ->
+            val accountPrefs = context.getSharedPreferences("account_prefs", Context.MODE_PRIVATE)
+            val editor = accountPrefs.edit()
+            val localMain = accountPrefs.getString("main_account", null)
+            if (replace || localMain.isNullOrBlank()) {
+                if (accounts.mainAccount.isNullOrBlank()) {
+                    if (replace) editor.remove("main_account")
+                } else {
+                    editor.putString("main_account", accounts.mainAccount)
+                }
+            }
+            val hidden = if (replace) {
+                accounts.hiddenAccounts.toSet()
+            } else {
+                (accountPrefs.getStringSet("hidden_accounts", emptySet()) ?: emptySet()) + accounts.hiddenAccounts
+            }
+            editor.putStringSet("hidden_accounts", hidden)
+            editor.apply()
+
+            if (replace) {
+                accounts.baseCurrency?.takeIf { it.isNotBlank() }?.let {
+                    userPreferencesRepository.updateBaseCurrency(it)
+                }
             }
         }
     }

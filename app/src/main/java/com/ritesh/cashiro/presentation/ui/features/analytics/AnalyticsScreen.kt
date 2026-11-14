@@ -574,7 +574,7 @@ fun SharedTransitionScope.AnalyticsScreen(
                                     }
                                 }
                             }
-                            uiState.categoryBreakdown.take(5).forEach { category ->
+                            uiState.categoryBreakdown.forEach { category ->
                                 BlurredAnimatedVisibility(
                                     visible = selectedBreakdownType != BreakdownType.PIE,
                                     enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
