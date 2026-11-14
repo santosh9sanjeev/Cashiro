@@ -76,9 +76,9 @@ class ApplyRulesToPastTransactionsUseCase @Inject constructor(
                 )
 
                 if (blockingRule != null) {
-                    // Soft delete the transaction
-                    val deletedTransaction = transaction.copy(isDeleted = true)
-                    transactionRepository.updateTransaction(deletedTransaction)
+                    // Delete it the way deleting from the app does, so its effect
+                    // comes off the account instead of lingering in the balance.
+                    transactionRepository.deleteTransaction(transaction)
                     totalDeleted++
                 } else {
                     // Apply rules to transaction
@@ -91,6 +91,12 @@ class ApplyRulesToPastTransactionsUseCase @Inject constructor(
                     // If transaction was modified, update it
                     if (ruleApplications.isNotEmpty()) {
                         transactionRepository.updateTransaction(updatedTransaction)
+                        // A rule can change the type, and with it how the transaction
+                        // moves money: an expense relabelled as income has to come
+                        // back off the account and go on again the other way.
+                        if (updatedTransaction.transactionType != transaction.transactionType) {
+                            transactionRepository.rebalanceAfterEdit(transaction, updatedTransaction)
+                        }
                         ruleRepository.saveRuleApplications(ruleApplications)
                         totalUpdated++
                     }
@@ -137,9 +143,9 @@ class ApplyRulesToPastTransactionsUseCase @Inject constructor(
                 ) != null
 
                 if (shouldBlock) {
-                    // Soft delete the transaction
-                    val deletedTransaction = transaction.copy(isDeleted = true)
-                    transactionRepository.updateTransaction(deletedTransaction)
+                    // Delete it the way deleting from the app does, so its effect
+                    // comes off the account instead of lingering in the balance.
+                    transactionRepository.deleteTransaction(transaction)
                     totalDeleted++
                 } else {
                     // Apply regular rule actions
@@ -152,6 +158,12 @@ class ApplyRulesToPastTransactionsUseCase @Inject constructor(
                     // If transaction was modified, update it
                     if (ruleApplications.isNotEmpty()) {
                         transactionRepository.updateTransaction(updatedTransaction)
+                        // A rule can change the type, and with it how the transaction
+                        // moves money: an expense relabelled as income has to come
+                        // back off the account and go on again the other way.
+                        if (updatedTransaction.transactionType != transaction.transactionType) {
+                            transactionRepository.rebalanceAfterEdit(transaction, updatedTransaction)
+                        }
                         ruleRepository.saveRuleApplications(ruleApplications)
                         totalUpdated++
                     }

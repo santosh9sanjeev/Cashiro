@@ -124,7 +124,10 @@ class BalanceUpdateProcessor @Inject constructor(
                 bankName = bankName,
                 accountLast4 = targetAccountLast4,
                 amount = amountInAccountCurrency,
-                transactionType = parsedTransaction.type.toEntityType(),
+                // The saved type, after rules: a rule that relabels an alert has
+                // to change how it moves the balance, or the account and the
+                // transaction list disagree.
+                transactionType = entity.transactionType,
                 // The bank states this balance in the account's own currency, so
                 // it is used as-is and never converted.
                 explicitBalance = parsedTransaction.balance,

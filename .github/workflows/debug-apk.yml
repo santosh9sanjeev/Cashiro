@@ -56,10 +56,17 @@ jobs:
           --tests "com.ritesh.cashiro.data.repository.TransactionEditRebalanceTest"
           --tests "com.ritesh.cashiro.data.repository.AccountAttributionTest"
 
+      # Non-blocking: the rest of the suite was never run in CI before, so any
+      # failure here is pre-existing and should not withhold the APK.
+      - name: Run remaining unit tests
+        continue-on-error: true
+        run: ./gradlew :app:testStandardDebugUnitTest --stacktrace --continue
+
       # Same idea for test failures: one annotation per failing test, carrying
-      # the assertion message.
+      # the assertion message. Runs after the full suite too, because that step
+      # is allowed to fail and its green tick alone does not say every test passed.
       - name: Annotate test failures
-        if: failure()
+        if: always()
         run: |
           python3 - <<'PY'
           import glob
@@ -84,12 +91,6 @@ jobs:
                       count += 1
           print(f"{count} failing test(s) annotated")
           PY
-
-      # Non-blocking: the rest of the suite was never run in CI before, so any
-      # failure here is pre-existing and should not withhold the APK.
-      - name: Run remaining unit tests
-        continue-on-error: true
-        run: ./gradlew :app:testStandardDebugUnitTest --stacktrace --continue
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
