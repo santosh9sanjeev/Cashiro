@@ -39,11 +39,49 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # Turn Kotlin compile errors into job annotations. Annotations on a public
+      # repo can be read through the API without signing in, so a failed build
+      # explains itself instead of needing someone to copy the log by hand.
+      - name: Register Kotlin error matcher
+        run: echo "::add-matcher::.github/kotlin-problem-matcher.json"
+
       # Blocking: the behaviour fixed in this branch. A failure here means a fix
       # does not do what it claims, so the APK must not be built.
       - name: Run balance tests
+        run: >-
+          ./gradlew :app:testStandardDebugUnitTest --stacktrace
+          --tests "com.ritesh.cashiro.data.database.dao.BalanceMathTest"
+          --tests "com.ritesh.cashiro.data.manager.BalanceUpdateProcessorTest"
+          --tests "com.ritesh.cashiro.domain.usecase.AddTransactionUseCaseTest"
+
+      # Same idea for test failures: one annotation per failing test, carrying
+      # the assertion message.
+      - name: Annotate test failures
+        if: failure()
         run: |
-          ./gradlew :app:testStandardDebugUnitTest --stacktrace             --tests "com.ritesh.cashiro.data.database.dao.BalanceMathTest"             --tests "com.ritesh.cashiro.data.manager.BalanceUpdateProcessorTest"             --tests "com.ritesh.cashiro.domain.usecase.AddTransactionUseCaseTest"
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          def esc_data(s):
+              return s.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+
+          def esc_prop(s):
+              return esc_data(s).replace(':', '%3A').replace(',', '%2C')
+
+          count = 0
+          for path in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+              for case in ET.parse(path).getroot().iter('testcase'):
+                  for kind in ('failure', 'error'):
+                      node = case.find(kind)
+                      if node is None:
+                          continue
+                      detail = (node.get('message') or node.text or '').strip()[:1500]
+                      title = esc_prop(f"{case.get('classname')}.{case.get('name')}")
+                      print(f"::error title={title}::{esc_data(detail)}")
+                      count += 1
+          print(f"{count} failing test(s) annotated")
+          PY
 
       # Non-blocking: the rest of the suite was never run in CI before, so any
       # failure here is pre-existing and should not withhold the APK.

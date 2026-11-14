@@ -111,6 +111,8 @@ class BalanceUpdateProcessorTest {
         dateTime = LocalDateTime.of(2026, 1, 1, 12, 0),
         bankName = bank,
         accountNumber = cardLast4,
+        // Required: the column has a database default but no Kotlin default.
+        transactionHash = "test-card-spend",
         currency = "INR"
     )
 

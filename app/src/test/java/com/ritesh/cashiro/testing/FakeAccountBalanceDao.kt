@@ -62,10 +62,15 @@ internal class FakeAccountBalanceDao : AccountBalanceDao() {
         return id
     }
 
+    // Rows written in quick succession can share a timestamp (deletion and undo
+    // both stamp LocalDateTime.now()), so break ties by insertion order. Without
+    // this, whichever tied row came first would win and a test could flake.
+    private val newestLast = compareBy<AccountBalanceEntity>({ it.timestamp }, { it.id })
+
     override suspend fun getLatestBalance(
         bankName: String,
         accountLast4: String
-    ): AccountBalanceEntity? = balances[Pair(bankName, accountLast4)]?.maxByOrNull { it.timestamp }
+    ): AccountBalanceEntity? = balances[Pair(bankName, accountLast4)]?.maxWithOrNull(newestLast)
 
     override suspend fun getLatestBalanceOnOrBefore(
         bankName: String,
@@ -73,7 +78,7 @@ internal class FakeAccountBalanceDao : AccountBalanceDao() {
         timestamp: LocalDateTime
     ): AccountBalanceEntity? = balances[Pair(bankName, accountLast4)]
         ?.filter { !it.timestamp.isAfter(timestamp) }
-        ?.maxByOrNull { it.timestamp }
+        ?.maxWithOrNull(newestLast)
 
     override suspend fun getEarliestBalance(
         bankName: String,
