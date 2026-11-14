@@ -1,0 +1,20 @@
+# Codemagic build definition for the Cashiro debug APK.
+# Codemagic's Linux images ship with the Android SDK and JDK preinstalled,
+# so this needs far less setup than a generic CI runner.
+# The APK appears under the build's Artifacts section when it finishes.
+workflows:
+  android-debug:
+    name: Cashiro debug APK
+    instance_type: linux_x2
+    max_build_duration: 60
+    environment:
+      java: 17
+      vars:
+        GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4G"
+    scripts:
+      - name: Make gradlew executable
+        script: chmod +x ./gradlew
+      - name: Build standard debug APK
+        script: ./gradlew assembleStandardDebug --stacktrace
+    artifacts:
+      - app/build/outputs/apk/standard/debug/*.apk
