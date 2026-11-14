@@ -1,5 +1,6 @@
 package com.ritesh.cashiro.data.repository
 
+import com.ritesh.cashiro.data.currency.CurrencyConversionService
 import com.ritesh.cashiro.data.database.dao.TransactionDao
 import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
 import com.ritesh.cashiro.data.database.entity.TransactionEntity
@@ -17,7 +18,8 @@ import kotlinx.coroutines.flow.map
 @Singleton
 class TransactionRepository @Inject constructor(
     private val transactionDao: TransactionDao,
-    private val accountBalanceRepository: AccountBalanceRepository
+    private val accountBalanceRepository: AccountBalanceRepository,
+    private val currencyConversionService: CurrencyConversionService
 ) {
     fun getAllTransactions(): Flow<List<TransactionEntity>> = transactionDao.getAllTransactions()
         .map { list -> list.filter { it.transactionType != TransactionType.BALANCE_UPDATE } }
@@ -232,9 +234,17 @@ class TransactionRepository @Inject constructor(
     ) {
         val latestBalance = accountBalanceRepository.getLatestBalance(bankName, accountLast4) ?: return
 
+        // The transaction may be denominated differently from the account it hits,
+        // so convert before any arithmetic.
+        val converted = currencyConversionService.convertAmount(
+            amount = effect.abs(),
+            fromCurrency = currency,
+            toCurrency = latestBalance.currency
+        ).let { if (effect.signum() < 0) it.negate() else it }
+
         // On a credit card the balance counts what is owed, so spending has to add
         // to it and a payment has to subtract — the opposite of a bank account.
-        val signed = if (latestBalance.isCreditCard) effect.negate() else effect
+        val signed = if (latestBalance.isCreditCard) converted.negate() else converted
         val delta = if (reverse) signed.negate() else signed
         val newBalance = (latestBalance.balance + delta).max(BigDecimal.ZERO)
 
@@ -251,7 +261,7 @@ class TransactionRepository @Inject constructor(
                 iconName = latestBalance.iconName,
                 isWallet = latestBalance.isWallet,
                 color = latestBalance.color,
-                currency = currency,
+                currency = latestBalance.currency,
                 sourceType = sourceType
             )
         )

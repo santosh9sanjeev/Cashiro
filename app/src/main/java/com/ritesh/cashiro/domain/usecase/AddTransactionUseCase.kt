@@ -6,6 +6,7 @@ import com.ritesh.cashiro.data.database.entity.SubscriptionEntity
 import com.ritesh.cashiro.data.database.entity.SubscriptionState
 import com.ritesh.cashiro.data.database.entity.TransactionEntity
 import com.ritesh.cashiro.data.database.entity.TransactionType
+import com.ritesh.cashiro.data.currency.CurrencyConversionService
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.SubscriptionRepository
 import com.ritesh.cashiro.data.repository.TransactionRepository
@@ -20,7 +21,8 @@ class AddTransactionUseCase
 constructor(
         private val transactionRepository: TransactionRepository,
         private val subscriptionRepository: SubscriptionRepository,
-        private val accountBalanceRepository: AccountBalanceRepository
+        private val accountBalanceRepository: AccountBalanceRepository,
+        private val currencyConversionService: CurrencyConversionService
 ) {
     suspend fun execute(
             amount: BigDecimal,
@@ -79,15 +81,32 @@ constructor(
             // The account's credit-card flag must be carried through, otherwise the
             // balance calculation treats a card like a bank account and subtracts
             // spending instead of adding it to the outstanding amount.
-            val sourceIsCreditCard =
-                    accountBalanceRepository.getLatestBalance(bankName, accountLast4)?.isCreditCard
-                            ?: false
-            val targetIsCreditCard =
+            val sourceAccount = accountBalanceRepository.getLatestBalance(bankName, accountLast4)
+            val targetAccount =
                     if (targetAccountBankName != null && targetAccountLast4 != null) {
                         accountBalanceRepository
                                 .getLatestBalance(targetAccountBankName, targetAccountLast4)
-                                ?.isCreditCard ?: false
-                    } else false
+                    } else null
+
+            val sourceIsCreditCard = sourceAccount?.isCreditCard ?: false
+            val targetIsCreditCard = targetAccount?.isCreditCard ?: false
+
+            // Each account holds money in its own currency. A transaction entered in
+            // a different one has to be converted per account, so a transfer between
+            // accounts of differing currencies moves an equivalent value rather than
+            // the same bare number.
+            val sourceCurrency = sourceAccount?.currency ?: currency
+            val targetCurrency = targetAccount?.currency ?: currency
+            val sourceAmount = currencyConversionService.convertAmount(
+                    amount = amount,
+                    fromCurrency = currency,
+                    toCurrency = sourceCurrency
+            )
+            val targetAmount = currencyConversionService.convertAmount(
+                    amount = amount,
+                    fromCurrency = currency,
+                    toCurrency = targetCurrency
+            )
 
             when (type) {
                 TransactionType.TRANSFER -> {
@@ -96,7 +115,7 @@ constructor(
                         accountBalanceRepository.insertTransactionBalance(
                             bankName = bankName,
                             accountLast4 = accountLast4,
-                            amount = amount,
+                            amount = sourceAmount,
                             transactionType = TransactionType.EXPENSE,
                             explicitBalance = null,
                             timestamp = date,
@@ -104,12 +123,12 @@ constructor(
                             creditLimit = null,
                             isCreditCard = sourceIsCreditCard,
                             smsSource = null,
-                            currency = currency
+                            currency = sourceCurrency
                         )
                         accountBalanceRepository.insertTransactionBalance(
                             bankName = targetAccountBankName,
                             accountLast4 = targetAccountLast4,
-                            amount = amount,
+                            amount = targetAmount,
                             transactionType = TransactionType.INCOME,
                             explicitBalance = null,
                             timestamp = date,
@@ -117,7 +136,7 @@ constructor(
                             creditLimit = null,
                             isCreditCard = targetIsCreditCard,
                             smsSource = null,
-                            currency = currency
+                            currency = targetCurrency
                         )
                     }
                 }
@@ -133,7 +152,7 @@ constructor(
                     accountBalanceRepository.insertTransactionBalance(
                         bankName = bankName,
                         accountLast4 = accountLast4,
-                        amount = amount,
+                        amount = sourceAmount,
                         transactionType = type,
                         explicitBalance = null,
                         timestamp = date,
@@ -141,7 +160,7 @@ constructor(
                         creditLimit = null,
                         isCreditCard = sourceIsCreditCard,
                         smsSource = null,
-                        currency = currency
+                        currency = sourceCurrency
                     )
                 }
             }

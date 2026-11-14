@@ -7,6 +7,7 @@ import com.ritesh.cashiro.data.database.entity.CardType
 import com.ritesh.cashiro.data.database.entity.TransactionEntity
 import com.ritesh.cashiro.data.database.entity.TransactionType
 import com.ritesh.cashiro.data.mapper.toEntityType
+import com.ritesh.cashiro.data.currency.CurrencyConversionService
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.CardRepository
 import com.ritesh.cashiro.utils.PiiRedactor
@@ -19,7 +20,8 @@ import javax.inject.Singleton
 @Singleton
 class BalanceUpdateProcessor @Inject constructor(
     private val cardRepository: CardRepository,
-    private val accountBalanceRepository: AccountBalanceRepository
+    private val accountBalanceRepository: AccountBalanceRepository,
+    private val currencyConversionService: CurrencyConversionService
 ) {
     companion object {
         private const val TAG = "BalanceUpdateProcessor"
@@ -80,18 +82,33 @@ class BalanceUpdateProcessor @Inject constructor(
                         cardRepository.getCard(parsedTransaction.bankName, it)?.cardType
                     } == CardType.CREDIT
 
+            // A transaction can arrive in a different currency from the account it
+            // belongs to (a card used abroad, for instance). Convert into the
+            // account's own currency, otherwise the raw figure is subtracted as
+            // though 30 USD and 30 AED were the same amount of money.
+            val accountCurrency = accountBalanceRepository
+                .getLatestBalance(parsedTransaction.bankName, targetAccountLast4)
+                ?.currency ?: parsedTransaction.currency
+            val amountInAccountCurrency = currencyConversionService.convertAmount(
+                amount = parsedTransaction.amount,
+                fromCurrency = parsedTransaction.currency,
+                toCurrency = accountCurrency
+            )
+
             accountBalanceRepository.insertTransactionBalance(
                 bankName = parsedTransaction.bankName,
                 accountLast4 = targetAccountLast4,
-                amount = parsedTransaction.amount,
+                amount = amountInAccountCurrency,
                 transactionType = parsedTransaction.type.toEntityType(),
+                // The bank states this balance in the account's own currency, so
+                // it is used as-is and never converted.
                 explicitBalance = parsedTransaction.balance,
                 timestamp = entity.dateTime,
                 transactionId = if (rowId != -1L) rowId else null,
                 creditLimit = parsedTransaction.creditLimit,
                 isCreditCard = isCreditCard,
                 smsSource = sanitizeSmsSource(parsedTransaction),
-                currency = parsedTransaction.currency
+                currency = accountCurrency
             )
 
             if (BuildConfig.DEBUG) {

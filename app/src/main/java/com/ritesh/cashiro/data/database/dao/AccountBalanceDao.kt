@@ -144,7 +144,10 @@ abstract class AccountBalanceDao {
                 } else {
                     SOURCE_TRANSACTION_CALCULATED
                 },
-                currency = currency,
+                // Never let a transaction relabel the account. A foreign-currency
+                // transaction is converted into the account's currency before it
+                // gets here, so the account's own currency is the correct one.
+                currency = previousForBalance?.currency ?: latest?.currency ?: currency,
                 iconResId = previousForBalance?.iconResId ?: latest?.iconResId ?: 0,
                 iconName = previousForBalance?.iconName ?: latest?.iconName ?: "",
                 isWallet = previousForBalance?.isWallet ?: latest?.isWallet ?: false,

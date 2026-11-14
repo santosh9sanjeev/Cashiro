@@ -893,10 +893,20 @@ class TransactionDetailViewModel @Inject constructor(
         val accountLast4 = oldTransaction.accountNumber!!
         val timestamp = oldTransaction.dateTime ?: LocalDateTime.now()
 
-        val isCreditCard =
-            accountBalanceRepository.getLatestBalance(bankName, accountLast4)?.isCreditCard ?: false
-        val oldEffect = balanceEffect(oldTransaction.amount, oldTransaction.transactionType, isCreditCard)
-        val newEffect = balanceEffect(newTransaction.amount, newTransaction.transactionType, isCreditCard)
+        val account = accountBalanceRepository.getLatestBalance(bankName, accountLast4)
+        val isCreditCard = account?.isCreditCard ?: false
+        val accountCurrency = account?.currency ?: newTransaction.currency
+
+        // Both figures have to be expressed in the account's currency before they
+        // can be compared against a balance held in that currency.
+        val oldAmount = currencyConversionService.convertAmount(
+            oldTransaction.amount, oldTransaction.currency, accountCurrency
+        )
+        val newAmount = currencyConversionService.convertAmount(
+            newTransaction.amount, newTransaction.currency, accountCurrency
+        )
+        val oldEffect = balanceEffect(oldAmount, oldTransaction.transactionType, isCreditCard)
+        val newEffect = balanceEffect(newAmount, newTransaction.transactionType, isCreditCard)
 
         // Fix the historical balance entry at the transaction's timestamp, then
         // recalculate forward — this cascades the change to all subsequent entries
@@ -967,7 +977,14 @@ class TransactionDetailViewModel @Inject constructor(
         currency: String
     ) {
         val currentBalance = accountBalanceRepository.getLatestBalance(bankName, accountLast4)
-        val newBalance = (currentBalance?.balance ?: BigDecimal.ZERO) + delta
+        // Convert the delta into whatever currency this account actually holds.
+        val accountCurrency = currentBalance?.currency ?: currency
+        val convertedDelta = currencyConversionService.convertAmount(
+            amount = delta.abs(),
+            fromCurrency = currency,
+            toCurrency = accountCurrency
+        ).let { if (delta.signum() < 0) it.negate() else it }
+        val newBalance = (currentBalance?.balance ?: BigDecimal.ZERO) + convertedDelta
         accountBalanceRepository.insertBalance(
             AccountBalanceEntity(
                 bankName = bankName,
