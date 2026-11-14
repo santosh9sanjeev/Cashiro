@@ -112,6 +112,7 @@ abstract class AccountBalanceDao {
         }
 
         val accountIsCreditCard = isCreditCard || (previousForBalance?.isCreditCard ?: false)
+        val knownCreditLimit = previousForBalance?.creditLimit ?: latest?.creditLimit
         val newBalance = explicitBalance ?: calculateTransactionBalance(
             currentBalance = previousForBalance?.balance ?: BigDecimal.ZERO,
             amount = amount,
@@ -127,9 +128,14 @@ abstract class AccountBalanceDao {
                 timestamp = timestamp,
                 transactionId = transactionId,
                 creditLimit = if (accountIsCreditCard) {
-                    creditLimit?.add(newBalance) ?: previousForBalance?.creditLimit ?: latest?.creditLimit
+                    // Parsers report the *available* limit, so the total limit is
+                    // available + outstanding. Only derive it when nothing is on
+                    // record yet: re-deriving on every SMS makes the stored limit
+                    // drift upward with the outstanding balance and silently
+                    // overwrites a limit the user set by hand.
+                    knownCreditLimit ?: creditLimit?.add(newBalance)
                 } else {
-                    previousForBalance?.creditLimit ?: latest?.creditLimit
+                    knownCreditLimit
                 },
                 isCreditCard = accountIsCreditCard,
                 smsSource = smsSource?.take(500),
@@ -383,6 +389,9 @@ abstract class AccountBalanceDao {
  
     @Query("UPDATE account_balances SET bank_name = :newBankName WHERE bank_name = :oldBankName AND account_last4 = :accountLast4")
     abstract suspend fun updateAccountBankName(oldBankName: String, accountLast4: String, newBankName: String): Int
+
+    @Query("UPDATE account_balances SET account_last4 = :newAccountLast4 WHERE bank_name = :bankName AND account_last4 = :oldAccountLast4")
+    abstract suspend fun updateAccountLast4(bankName: String, oldAccountLast4: String, newAccountLast4: String): Int
  
     @Query("SELECT * FROM account_balances WHERE transaction_id = :transactionId LIMIT 1")
     abstract suspend fun getBalanceByTransactionId(transactionId: Long): AccountBalanceEntity?

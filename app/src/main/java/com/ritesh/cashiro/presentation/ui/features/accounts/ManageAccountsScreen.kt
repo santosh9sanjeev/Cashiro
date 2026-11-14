@@ -94,6 +94,7 @@ import com.ritesh.cashiro.presentation.ui.icons.Iconax
 import com.ritesh.cashiro.presentation.ui.theme.Dimensions
 import com.ritesh.cashiro.presentation.ui.theme.LocalBlurEffects
 import com.ritesh.cashiro.presentation.ui.theme.Spacing
+import com.ritesh.cashiro.utils.CreditCardUtils
 import com.ritesh.cashiro.utils.CurrencyFormatter
 import dev.chrisbanes.haze.ExperimentalHazeApi
 import dev.chrisbanes.haze.HazeDefaults
@@ -834,6 +835,7 @@ fun ManageAccountsScreen(
                         oldBankName = accountToEdit!!.bankName,
                         accountLast4 = accountToEdit!!.accountLast4,
                         newBankName = bankName,
+                        newAccountLast4 = last4,
                         newBalance = balance,
                         newCreditLimit = limit,
                         isCreditCard = isCC,
@@ -1017,13 +1019,8 @@ private fun CreditCardItem(
     onAccountClick: () -> Unit = {},
     onMergeAccount: () -> Unit = {}
 ) {
-    val available = (card.creditLimit ?: BigDecimal.ZERO) - card.balance
-    val utilization =
-        if (card.creditLimit != null && card.creditLimit > BigDecimal.ZERO) {
-            ((card.balance.toDouble() / card.creditLimit.toDouble()) * 100).toInt()
-        } else {
-            0
-        }
+    val available = CreditCardUtils.availableCredit(card.balance, card.creditLimit)
+    val utilization = CreditCardUtils.utilizationPercent(card.balance, card.creditLimit)
 
     val utilizationColor =
         when {

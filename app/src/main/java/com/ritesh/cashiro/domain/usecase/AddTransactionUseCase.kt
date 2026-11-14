@@ -76,6 +76,19 @@ constructor(
 
         // Update account balances based on transaction type
         if (bankName != null && accountLast4 != null) {
+            // The account's credit-card flag must be carried through, otherwise the
+            // balance calculation treats a card like a bank account and subtracts
+            // spending instead of adding it to the outstanding amount.
+            val sourceIsCreditCard =
+                    accountBalanceRepository.getLatestBalance(bankName, accountLast4)?.isCreditCard
+                            ?: false
+            val targetIsCreditCard =
+                    if (targetAccountBankName != null && targetAccountLast4 != null) {
+                        accountBalanceRepository
+                                .getLatestBalance(targetAccountBankName, targetAccountLast4)
+                                ?.isCreditCard ?: false
+                    } else false
+
             when (type) {
                 TransactionType.TRANSFER -> {
                     // Transfer: subtract from source, add to target
@@ -89,7 +102,7 @@ constructor(
                             timestamp = date,
                             transactionId = transactionId,
                             creditLimit = null,
-                            isCreditCard = false,
+                            isCreditCard = sourceIsCreditCard,
                             smsSource = null,
                             currency = currency
                         )
@@ -102,7 +115,7 @@ constructor(
                             timestamp = date,
                             transactionId = transactionId,
                             creditLimit = null,
-                            isCreditCard = false,
+                            isCreditCard = targetIsCreditCard,
                             smsSource = null,
                             currency = currency
                         )
@@ -126,7 +139,7 @@ constructor(
                         timestamp = date,
                         transactionId = transactionId,
                         creditLimit = null,
-                        isCreditCard = false,
+                        isCreditCard = sourceIsCreditCard,
                         smsSource = null,
                         currency = currency
                     )

@@ -171,11 +171,20 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
             val scanMonths = userPreferencesRepository.getSmsScanMonths()
             val scanAllTime = userPreferencesRepository.getSmsScanAllTime()
             val lastScanPeriod = userPreferencesRepository.getLastScanPeriod().first() ?: 0
+            val useCustomRange = userPreferencesRepository.getSmsScanCustomRange()
+            val customFrom = userPreferencesRepository.getSmsScanFromDate()
+            val customTo = userPreferencesRepository.getSmsScanToDate()
             val now = System.currentTimeMillis()
 
-            val needsFullScan = forceResync || lastScanTimestamp == 0L || scanAllTime || scanMonths > lastScanPeriod
+            // A custom from/to window cannot be expressed as "N months back", so it
+            // always runs as a full scan of exactly the range the user picked.
+            val hasCustomRange = useCustomRange && customFrom > 0L
+            val needsFullScan = hasCustomRange || forceResync || lastScanTimestamp == 0L ||
+                    scanAllTime || scanMonths > lastScanPeriod
 
-            val scanStartTime = if (needsFullScan) {
+            val scanStartTime = if (hasCustomRange) {
+                customFrom
+            } else if (needsFullScan) {
                 val calendar = java.util.Calendar.getInstance().apply {
                     if (scanAllTime) {
                         add(java.util.Calendar.YEAR, -10)
@@ -200,8 +209,14 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
                 )
             }
 
+            // Upper bound of the window. Only a custom range sets one; every other
+            // mode scans up to the present.
+            val scanEndTime = if (hasCustomRange && customTo > 0L) customTo else Long.MAX_VALUE
+
+            Log.d(TAG, "Scan window: $scanStartTime..$scanEndTime (custom=$hasCustomRange)")
+
             // Get total count upfront for stats
-            val totalMsgCount = getSmsAndRcsCount(scanStartTime)
+            val totalMsgCount = getSmsAndRcsCount(scanStartTime, scanEndTime)
             stats.totalMessages = totalMsgCount
             Log.d(TAG, "Found $totalMsgCount SMS & RCS messages to process")
 
@@ -238,7 +253,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 
             // Process messages via 3-stage channel pipeline
             val processingTime = measureTimeMillis {
-                processWithChannelPipeline(scanStartTime, stats, batchSize, parseParallelism)
+                processWithChannelPipeline(scanStartTime, scanEndTime, stats, batchSize, parseParallelism)
             }
 
             stats.updateTimeElapsed()
@@ -297,6 +312,7 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 
     private suspend fun processWithChannelPipeline(
         scanStartTime: Long,
+        scanEndTime: Long,
         stats: ProcessingStats,
         batchSize: Int,
         parseParallelism: Int
@@ -310,8 +326,8 @@ class OptimizedSmsReaderWorker @AssistedInject constructor(
 
         // Stage 1: Feed — stream messages into input channel
         val feedJob = launch {
-            streamSmsToChannel(inputChannel, scanStartTime)
-            streamRcsToChannel(inputChannel, scanStartTime)
+            streamSmsToChannel(inputChannel, scanStartTime, scanEndTime)
+            streamRcsToChannel(inputChannel, scanStartTime, scanEndTime)
             inputChannel.close()
         }
 
@@ -774,14 +790,18 @@ private suspend fun processUnrecognizedSms(sms: SmsMessage) {
     }
 }
 
-private fun getSmsAndRcsCount(scanStartTime: Long): Int {
+private fun getSmsAndRcsCount(scanStartTime: Long, scanEndTime: Long = Long.MAX_VALUE): Int {
     var total = 0
     try {
         val smsCursor = applicationContext.contentResolver.query(
             Telephony.Sms.CONTENT_URI,
             arrayOf(Telephony.Sms._ID),
-            "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.DATE} >= ?",
-            arrayOf(Telephony.Sms.MESSAGE_TYPE_INBOX.toString(), scanStartTime.toString()),
+            "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.DATE} >= ? AND ${Telephony.Sms.DATE} <= ?",
+            arrayOf(
+                Telephony.Sms.MESSAGE_TYPE_INBOX.toString(),
+                scanStartTime.toString(),
+                scanEndTime.toString()
+            ),
             null
         )
         smsCursor?.use {
@@ -793,11 +813,12 @@ private fun getSmsAndRcsCount(scanStartTime: Long): Int {
 
     try {
         val scanStartTimeSeconds = scanStartTime / 1000
+        val scanEndTimeSeconds = if (scanEndTime == Long.MAX_VALUE) Long.MAX_VALUE else scanEndTime / 1000
         val mmsCursor = applicationContext.contentResolver.query(
             Uri.parse("content://mms"),
             arrayOf("_id", "tr_id"),
-            "date >= ?",
-            arrayOf(scanStartTimeSeconds.toString()),
+            "date >= ? AND date <= ?",
+            arrayOf(scanStartTimeSeconds.toString(), scanEndTimeSeconds.toString()),
             null
         )
         mmsCursor?.use { cursor ->
@@ -826,14 +847,19 @@ private fun getSmsAndRcsCount(scanStartTime: Long): Int {
 
 private suspend fun streamSmsToChannel(
     channel: Channel<SmsMessage>,
-    scanStartTime: Long
+    scanStartTime: Long,
+    scanEndTime: Long = Long.MAX_VALUE
 ) {
     try {
         val cursor = applicationContext.contentResolver.query(
             Telephony.Sms.CONTENT_URI,
             SMS_PROJECTION,
-            "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.DATE} >= ?",
-            arrayOf(Telephony.Sms.MESSAGE_TYPE_INBOX.toString(), scanStartTime.toString()),
+            "${Telephony.Sms.TYPE} = ? AND ${Telephony.Sms.DATE} >= ? AND ${Telephony.Sms.DATE} <= ?",
+            arrayOf(
+                Telephony.Sms.MESSAGE_TYPE_INBOX.toString(),
+                scanStartTime.toString(),
+                scanEndTime.toString()
+            ),
             "${Telephony.Sms.DATE} ASC"  // Process oldest first (chronological order)
         )
 
@@ -862,16 +888,18 @@ private suspend fun streamSmsToChannel(
 
 private suspend fun streamRcsToChannel(
     channel: Channel<SmsMessage>,
-    scanStartTime: Long
+    scanStartTime: Long,
+    scanEndTime: Long = Long.MAX_VALUE
 ) {
     try {
         val scanStartTimeSeconds = scanStartTime / 1000
+        val scanEndTimeSeconds = if (scanEndTime == Long.MAX_VALUE) Long.MAX_VALUE else scanEndTime / 1000
 
         val mmsCursor = applicationContext.contentResolver.query(
             Uri.parse("content://mms"),
             arrayOf("_id", "thread_id", "date", "tr_id", "m_id"),
-            "date >= ?",
-            arrayOf(scanStartTimeSeconds.toString()),
+            "date >= ? AND date <= ?",
+            arrayOf(scanStartTimeSeconds.toString(), scanEndTimeSeconds.toString()),
             "date ASC"  // Process oldest first (chronological order)
         )
 

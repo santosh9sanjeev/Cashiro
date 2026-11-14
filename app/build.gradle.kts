@@ -97,6 +97,13 @@ android {
 
 
     buildTypes {
+        debug {
+            // Keeps a locally built debug APK separate from any Cashiro installed
+            // from F-Droid or Play: different applicationId means both can sit on
+            // the device at once, and the debug signing key no longer clashes.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

@@ -40,6 +40,10 @@ constructor(@ApplicationContext private val context: Context) {
         val ACTIVE_DOWNLOAD_ID = longPreferencesKey("active_download_id")
         val SMS_SCAN_MONTHS = intPreferencesKey("sms_scan_months")
         val SMS_SCAN_ALL_TIME = booleanPreferencesKey("sms_scan_all_time")
+        // Custom from/to scan window. Epoch millis; 0 means "not set".
+        val SMS_SCAN_CUSTOM_RANGE = booleanPreferencesKey("sms_scan_custom_range")
+        val SMS_SCAN_FROM_DATE = longPreferencesKey("sms_scan_from_date")
+        val SMS_SCAN_TO_DATE = longPreferencesKey("sms_scan_to_date")
         val LAST_SCAN_TIMESTAMP = longPreferencesKey("last_scan_timestamp")
         val LAST_SCAN_PERIOD = intPreferencesKey("last_scan_period")
         val BASE_CURRENCY = stringPreferencesKey("base_currency")
@@ -446,6 +450,7 @@ constructor(@ApplicationContext private val context: Context) {
     suspend fun updateSmsScanMonths(months: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMS_SCAN_MONTHS] = months
+            preferences[PreferencesKeys.SMS_SCAN_CUSTOM_RANGE] = false
         }
     }
 
@@ -464,6 +469,7 @@ constructor(@ApplicationContext private val context: Context) {
     suspend fun updateSmsScanAllTime(allTime: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SMS_SCAN_ALL_TIME] = allTime
+            if (allTime) preferences[PreferencesKeys.SMS_SCAN_CUSTOM_RANGE] = false
         }
     }
 
@@ -471,6 +477,64 @@ constructor(@ApplicationContext private val context: Context) {
         return context.dataStore
                 .data
                 .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_ALL_TIME] ?: true }
+                .first()
+    }
+
+    /**
+     * When true the scan window comes from [smsScanFromDate]/[smsScanToDate]
+     * instead of the fixed month presets.
+     */
+    val smsScanCustomRange: Flow<Boolean> =
+            context.dataStore.data.map { preferences ->
+                preferences[PreferencesKeys.SMS_SCAN_CUSTOM_RANGE] ?: false
+            }
+
+    val smsScanFromDate: Flow<Long> =
+            context.dataStore.data.map { preferences ->
+                preferences[PreferencesKeys.SMS_SCAN_FROM_DATE] ?: 0L
+            }
+
+    val smsScanToDate: Flow<Long> =
+            context.dataStore.data.map { preferences ->
+                preferences[PreferencesKeys.SMS_SCAN_TO_DATE] ?: 0L
+            }
+
+    suspend fun updateSmsScanCustomRange(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SMS_SCAN_CUSTOM_RANGE] = enabled
+        }
+    }
+
+    suspend fun updateSmsScanDateRange(fromDate: Long, toDate: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SMS_SCAN_FROM_DATE] = fromDate
+            preferences[PreferencesKeys.SMS_SCAN_TO_DATE] = toDate
+            preferences[PreferencesKeys.SMS_SCAN_CUSTOM_RANGE] = true
+            // A custom window is never a superset of a month preset, so clear the
+            // all-time flag and force the next scan to re-read the chosen range.
+            preferences[PreferencesKeys.SMS_SCAN_ALL_TIME] = false
+            preferences[PreferencesKeys.LAST_SCAN_TIMESTAMP] = 0L
+        }
+    }
+
+    suspend fun getSmsScanCustomRange(): Boolean {
+        return context.dataStore
+                .data
+                .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_CUSTOM_RANGE] ?: false }
+                .first()
+    }
+
+    suspend fun getSmsScanFromDate(): Long {
+        return context.dataStore
+                .data
+                .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_FROM_DATE] ?: 0L }
+                .first()
+    }
+
+    suspend fun getSmsScanToDate(): Long {
+        return context.dataStore
+                .data
+                .map { preferences -> preferences[PreferencesKeys.SMS_SCAN_TO_DATE] ?: 0L }
                 .first()
     }
 

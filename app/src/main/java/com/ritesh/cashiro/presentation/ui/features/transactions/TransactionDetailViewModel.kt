@@ -893,8 +893,10 @@ class TransactionDetailViewModel @Inject constructor(
         val accountLast4 = oldTransaction.accountNumber!!
         val timestamp = oldTransaction.dateTime ?: LocalDateTime.now()
 
-        val oldEffect = balanceEffect(oldTransaction.amount, oldTransaction.transactionType)
-        val newEffect = balanceEffect(newTransaction.amount, newTransaction.transactionType)
+        val isCreditCard =
+            accountBalanceRepository.getLatestBalance(bankName, accountLast4)?.isCreditCard ?: false
+        val oldEffect = balanceEffect(oldTransaction.amount, oldTransaction.transactionType, isCreditCard)
+        val newEffect = balanceEffect(newTransaction.amount, newTransaction.transactionType, isCreditCard)
 
         // Fix the historical balance entry at the transaction's timestamp, then
         // recalculate forward — this cascades the change to all subsequent entries
@@ -913,37 +915,49 @@ class TransactionDetailViewModel @Inject constructor(
     ) {
         val oldAmount = oldTransaction.amount
         val newAmount = newTransaction.amount
+        val difference = newAmount - oldAmount
 
-        // source account: -amount effect
-        val sourceDelta = -(newAmount - oldAmount)
-        if (sourceDelta != BigDecimal.ZERO && oldTransaction.bankName != null && oldTransaction.accountNumber != null) {
+        // Money leaves the source. On a bank account that lowers the balance; on a
+        // credit card it raises the outstanding amount, so the sign flips.
+        if (difference != BigDecimal.ZERO && oldTransaction.bankName != null && oldTransaction.accountNumber != null) {
+            val sourceIsCreditCard = accountBalanceRepository
+                .getLatestBalance(oldTransaction.bankName, oldTransaction.accountNumber)
+                ?.isCreditCard ?: false
+            val sourceDelta = if (sourceIsCreditCard) difference else difference.negate()
             applyBalanceWithDelta(oldTransaction.bankName, oldTransaction.accountNumber, sourceDelta, newTransaction.currency)
         }
 
-        // target account: +amount effect
+        // Money arrives at the target. Paying a credit card bill lands here and has
+        // to reduce the outstanding amount rather than increase a balance.
         val oldTarget = oldTransaction.toAccount
         val newTarget = newTransaction.toAccount
-        if (oldTarget != null) {
+        if (oldTarget != null && difference != BigDecimal.ZERO) {
             findAccountByLast4(oldTarget)?.let { target ->
-                val targetDelta = newAmount - oldAmount
-                if (targetDelta != BigDecimal.ZERO) {
-                    applyBalanceWithDelta(target.bankName, target.accountLast4, targetDelta, newTransaction.currency)
-                }
+                val targetDelta = if (target.isCreditCard) difference.negate() else difference
+                applyBalanceWithDelta(target.bankName, target.accountLast4, targetDelta, newTransaction.currency)
             }
         }
         if (newTarget != null && newTarget != oldTarget) {
             findAccountByLast4(newTarget)?.let { target ->
-                applyBalanceWithDelta(target.bankName, target.accountLast4, newAmount, newTransaction.currency)
+                val targetDelta = if (target.isCreditCard) newAmount.negate() else newAmount
+                applyBalanceWithDelta(target.bankName, target.accountLast4, targetDelta, newTransaction.currency)
             }
         }
     }
 
-    private fun balanceEffect(amount: BigDecimal, type: TransactionType): BigDecimal {
-        return when (type) {
+    private fun balanceEffect(
+        amount: BigDecimal,
+        type: TransactionType,
+        isCreditCard: Boolean = false
+    ): BigDecimal {
+        val effect = when (type) {
             TransactionType.INCOME, TransactionType.CREDIT -> amount
             TransactionType.EXPENSE, TransactionType.INVESTMENT -> amount.negate()
             else -> BigDecimal.ZERO
         }
+        // A credit card balance is an outstanding amount, so every effect is
+        // mirrored: an expense adds to it and a payment subtracts from it.
+        return if (isCreditCard) effect.negate() else effect
     }
 
     private suspend fun applyBalanceWithDelta(

@@ -90,6 +90,7 @@
     <string name="range_last_6_months">Last 6 Months</string>
     <string name="range_last_year">Last Year</string>
     <string name="range_all_time">All Time</string>
+    <string name="range_custom_dates">Custom range</string>
     <!-- Add/Edit Account Screens -->
     <string name="add_account_info">Add accounts not tracked via SMS like cash, wallets, or investment accounts.</string>
     <string name="account_type_label">Account Type</string>
@@ -583,7 +584,9 @@
         <item quantity="one">%1$d message from potential banks</item>
         <item quantity="other">%1$d messages from potential banks</item>
     </plurals>
-    <string name="sms_scan_period_desc">Choose how many months of SMS history to scan for transactions</string>
+    <string name="sms_scan_period_desc">Choose how much SMS history to scan for transactions, or pick an exact date range</string>
+    <string name="scan_custom_range_title">Select scan date range</string>
+    <string name="scan_custom_range_format">Scanning %1$s to %2$s</string>
     <string name="one_month">1 month</string>
     <string name="two_years">2 years</string>
     <!-- Unrecognized SMS Screen -->

@@ -52,6 +52,14 @@ interface CardDao {
         WHERE id = :cardId
     """)
     suspend fun linkCardToAccount(cardId: Long, accountLast4: String?)
+
+    /** Keeps card links pointing at an account that has been renumbered. */
+    @Query("""
+        UPDATE cards
+        SET account_last4 = :newAccountLast4
+        WHERE account_last4 = :oldAccountLast4
+    """)
+    suspend fun relinkCardsToAccount(oldAccountLast4: String, newAccountLast4: String): Int
     
     @Query("""
         UPDATE cards 

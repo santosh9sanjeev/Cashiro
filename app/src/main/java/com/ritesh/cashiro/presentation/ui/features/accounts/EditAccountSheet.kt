@@ -80,6 +80,7 @@ import com.ritesh.cashiro.presentation.ui.icons.Iconax
 import com.ritesh.cashiro.presentation.ui.icons.Information
 import com.ritesh.cashiro.presentation.ui.icons.Wallet3
 import com.ritesh.cashiro.presentation.ui.theme.Spacing
+import com.ritesh.cashiro.utils.CreditCardUtils
 import com.ritesh.cashiro.utils.CurrencyFormatter
 import com.ritesh.cashiro.utils.IconResolutionUtils
 import java.math.BigDecimal
@@ -464,10 +465,8 @@ fun EditAccountSheet(
                     }
 
                     // Available Credit Tip
-                    val availableCredit = creditLimit - balance
-                    val utilization = if (creditLimit > BigDecimal.ZERO) {
-                        ((balance.toDouble() / creditLimit.toDouble()) * 100).toInt()
-                    } else 0
+                    val availableCredit = CreditCardUtils.availableCredit(balance, creditLimit)
+                    val utilization = CreditCardUtils.utilizationPercent(balance, creditLimit)
 
                     Spacer(modifier = Modifier.height(12.dp))
                     Card(

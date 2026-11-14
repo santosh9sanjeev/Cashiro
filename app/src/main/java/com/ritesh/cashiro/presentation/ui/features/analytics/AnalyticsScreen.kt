@@ -561,7 +561,15 @@ fun SharedTransitionScope.AnalyticsScreen(
                                     Column{
                                         CategoryPieChart(
                                             categories = uiState.categoryBreakdown,
-                                            currency = uiState.currency
+                                            currency = uiState.currency,
+                                            onCategoryClick = { categoryName ->
+                                                onNavigateToTransactions(
+                                                    categoryName,
+                                                    null,
+                                                    selectedPeriod.name,
+                                                    uiState.currency
+                                                )
+                                            }
                                         )
                                     }
                                 }

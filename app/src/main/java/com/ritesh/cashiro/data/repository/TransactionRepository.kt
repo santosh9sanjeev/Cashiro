@@ -11,6 +11,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 @Singleton
@@ -182,63 +183,86 @@ class TransactionRepository @Inject constructor(
     }
 
     private suspend fun reverseBalanceForDeletion(transaction: TransactionEntity) {
-        val bankName = transaction.bankName ?: return
-        val accountLast4 = transaction.accountNumber ?: return
-        val latestBalance = accountBalanceRepository.getLatestBalance(bankName, accountLast4) ?: return
-        val currentBalance = latestBalance.balance
-
-        val reversedBalance = when (transaction.transactionType) {
-            TransactionType.CREDIT, TransactionType.INCOME, TransactionType.BORROWED -> currentBalance - transaction.amount
-            TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT -> currentBalance + transaction.amount
-            else -> currentBalance
-        }.max(BigDecimal.ZERO)
-
-        val balanceEntity = AccountBalanceEntity(
-            bankName = bankName,
-            accountLast4 = accountLast4,
-            balance = reversedBalance,
-            timestamp = LocalDateTime.now(),
-            transactionId = null,
-            creditLimit = latestBalance.creditLimit,
-            isCreditCard = latestBalance.isCreditCard,
-            iconResId = latestBalance.iconResId,
-            iconName = latestBalance.iconName,
-            isWallet = latestBalance.isWallet,
-            color = latestBalance.color,
-            currency = transaction.currency,
-            sourceType = "DELETE_REVERSAL"
-        )
-        accountBalanceRepository.insertBalance(balanceEntity)
+        applyTransactionToBalances(transaction, reverse = true, sourceType = "DELETE_REVERSAL")
     }
 
-    private suspend fun applyBalanceForTransaction(transaction: TransactionEntity) {
-        val bankName = transaction.bankName ?: return
-        val accountLast4 = transaction.accountNumber ?: return
-        val latestBalance = accountBalanceRepository.getLatestBalance(bankName, accountLast4) ?: return
-        val currentBalance = latestBalance.balance
+    /**
+     * Applies (or undoes) a transaction's effect on the accounts it touches.
+     *
+     * Handles both legs of a transfer, and mirrors the sign on credit cards where
+     * the stored balance is an outstanding amount rather than available money.
+     */
+    private suspend fun applyTransactionToBalances(
+        transaction: TransactionEntity,
+        reverse: Boolean,
+        sourceType: String
+    ) {
+        val bankName = transaction.bankName
+        val accountLast4 = transaction.accountNumber
 
-        val newBalance = when (transaction.transactionType) {
-            TransactionType.CREDIT, TransactionType.INCOME, TransactionType.BORROWED -> currentBalance + transaction.amount
-            TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT -> (currentBalance - transaction.amount).max(BigDecimal.ZERO)
-            else -> currentBalance
+        if (transaction.transactionType == TransactionType.TRANSFER) {
+            // Source loses the money, target receives it.
+            if (bankName != null && accountLast4 != null) {
+                adjustBalance(bankName, accountLast4, transaction.amount.negate(), reverse, sourceType, transaction.currency)
+            }
+            val target = transaction.toAccount?.let { findAccountByLast4(it) }
+            if (target != null) {
+                adjustBalance(target.bankName, target.accountLast4, transaction.amount, reverse, sourceType, transaction.currency)
+            }
+            return
         }
 
-        val balanceEntity = AccountBalanceEntity(
-            bankName = bankName,
-            accountLast4 = accountLast4,
-            balance = newBalance,
-            timestamp = LocalDateTime.now(),
-            transactionId = null,
-            creditLimit = latestBalance.creditLimit,
-            isCreditCard = latestBalance.isCreditCard,
-            iconResId = latestBalance.iconResId,
-            iconName = latestBalance.iconName,
-            isWallet = latestBalance.isWallet,
-            color = latestBalance.color,
-            currency = transaction.currency,
-            sourceType = "UNDO_REVERSAL"
+        if (bankName == null || accountLast4 == null) return
+
+        val effect = when (transaction.transactionType) {
+            TransactionType.CREDIT, TransactionType.INCOME, TransactionType.BORROWED -> transaction.amount
+            TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT -> transaction.amount.negate()
+            else -> return
+        }
+        adjustBalance(bankName, accountLast4, effect, reverse, sourceType, transaction.currency)
+    }
+
+    private suspend fun adjustBalance(
+        bankName: String,
+        accountLast4: String,
+        effect: BigDecimal,
+        reverse: Boolean,
+        sourceType: String,
+        currency: String
+    ) {
+        val latestBalance = accountBalanceRepository.getLatestBalance(bankName, accountLast4) ?: return
+
+        // On a credit card the balance counts what is owed, so spending has to add
+        // to it and a payment has to subtract — the opposite of a bank account.
+        val signed = if (latestBalance.isCreditCard) effect.negate() else effect
+        val delta = if (reverse) signed.negate() else signed
+        val newBalance = (latestBalance.balance + delta).max(BigDecimal.ZERO)
+
+        accountBalanceRepository.insertBalance(
+            AccountBalanceEntity(
+                bankName = bankName,
+                accountLast4 = accountLast4,
+                balance = newBalance,
+                timestamp = LocalDateTime.now(),
+                transactionId = null,
+                creditLimit = latestBalance.creditLimit,
+                isCreditCard = latestBalance.isCreditCard,
+                iconResId = latestBalance.iconResId,
+                iconName = latestBalance.iconName,
+                isWallet = latestBalance.isWallet,
+                color = latestBalance.color,
+                currency = currency,
+                sourceType = sourceType
+            )
         )
-        accountBalanceRepository.insertBalance(balanceEntity)
+    }
+
+    private suspend fun findAccountByLast4(last4: String): AccountBalanceEntity? =
+        accountBalanceRepository.getAllLatestBalances().first()
+            .find { it.accountLast4 == last4 }
+
+    private suspend fun applyBalanceForTransaction(transaction: TransactionEntity) {
+        applyTransactionToBalances(transaction, reverse = false, sourceType = "UNDO_REVERSAL")
     }
 
     suspend fun updateCategoryForMerchant(merchantName: String, newCategory: String) {

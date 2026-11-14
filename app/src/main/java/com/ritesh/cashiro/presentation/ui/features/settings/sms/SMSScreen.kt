@@ -27,6 +27,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -53,6 +56,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ritesh.cashiro.presentation.ui.features.categories.NavigationContent
@@ -90,9 +98,24 @@ fun SMSScreen(
 ) {
     val smsScanMonths by settingsViewModel.smsScanMonths.collectAsStateWithLifecycle(initialValue = 3)
     val smsScanAllTime by settingsViewModel.smsScanAllTime.collectAsStateWithLifecycle(initialValue = true)
+    val smsScanCustomRange by settingsViewModel.smsScanCustomRange.collectAsStateWithLifecycle(initialValue = false)
+    val smsScanFromDate by settingsViewModel.smsScanFromDate.collectAsStateWithLifecycle(initialValue = 0L)
+    val smsScanToDate by settingsViewModel.smsScanToDate.collectAsStateWithLifecycle(initialValue = 0L)
     val unreportedCount by settingsViewModel.unreportedSmsCount.collectAsStateWithLifecycle()
 
     var showSmsScanDialog by remember { mutableStateOf(false) }
+    var showDateRangePicker by remember { mutableStateOf(false) }
+
+    val hasCustomRange = smsScanCustomRange && smsScanFromDate > 0L
+    val scanPeriodSummary = when {
+        hasCustomRange -> stringResource(
+            R.string.scan_custom_range_format,
+            formatScanDate(smsScanFromDate),
+            formatScanDate(if (smsScanToDate > 0L) smsScanToDate else System.currentTimeMillis())
+        )
+        smsScanAllTime -> stringResource(R.string.scan_all_sms)
+        else -> stringResource(R.string.scan_months_format, smsScanMonths)
+    }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val scrollBehaviorSmall = TopAppBarDefaults.pinnedScrollBehavior()
@@ -146,8 +169,7 @@ fun SMSScreen(
                         },
                         supporting = {
                             Text(
-                                text = if (smsScanAllTime) stringResource(R.string.scan_all_sms)
-                                else stringResource(R.string.scan_months_format, smsScanMonths),
+                                text = scanPeriodSummary,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -186,8 +208,11 @@ fun SMSScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = if (smsScanAllTime) stringResource(R.string.range_all_time)
-                                    else stringResource(R.string.months_count_format, smsScanMonths),
+                                    text = when {
+                                        hasCustomRange -> stringResource(R.string.range_custom_dates)
+                                        smsScanAllTime -> stringResource(R.string.range_all_time)
+                                        else -> stringResource(R.string.months_count_format, smsScanMonths)
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onPrimary
                                 )
@@ -275,15 +300,20 @@ fun SMSScreen(
                         )
                         Spacer(modifier = Modifier.height(Spacing.md))
 
-                        val options = listOf(-1) + listOf(1, 2, 3, 6, 12, 24)
+                        // -1 = all time, -2 = pick an explicit from/to window
+                        val options = listOf(-1) + listOf(1, 2, 3, 6, 12, 24) + listOf(-2)
                         options.forEachIndexed { index, months ->
-                            val isSelected = if (months == -1) smsScanAllTime
-                            else smsScanMonths == months && !smsScanAllTime
+                            val isSelected = when (months) {
+                                -2 -> hasCustomRange
+                                -1 -> smsScanAllTime && !hasCustomRange
+                                else -> smsScanMonths == months && !smsScanAllTime && !hasCustomRange
+                            }
 
                             ListItem(
                                 headline = {
                                     Text(
                                         text = when (months) {
+                                            -2 -> stringResource(R.string.range_custom_dates)
                                             -1 -> stringResource(R.string.range_all_time)
                                             1 -> stringResource(R.string.one_month)
                                             24 -> stringResource(R.string.two_years)
@@ -299,13 +329,20 @@ fun SMSScreen(
                                 },
                                 selected = isSelected,
                                 onClick = {
-                                    if (months == -1) {
-                                        settingsViewModel.updateSmsScanAllTime(true)
-                                        showSmsScanDialog = false
-                                    } else {
-                                        settingsViewModel.updateSmsScanMonths(months)
-                                        settingsViewModel.updateSmsScanAllTime(false)
-                                        showSmsScanDialog = false
+                                    when (months) {
+                                        -2 -> {
+                                            showSmsScanDialog = false
+                                            showDateRangePicker = true
+                                        }
+                                        -1 -> {
+                                            settingsViewModel.updateSmsScanAllTime(true)
+                                            showSmsScanDialog = false
+                                        }
+                                        else -> {
+                                            settingsViewModel.updateSmsScanMonths(months)
+                                            settingsViewModel.updateSmsScanAllTime(false)
+                                            showSmsScanDialog = false
+                                        }
                                     }
                                 },
                                 shape = ListItemPosition.from(index, options.size).toShape(),
@@ -355,5 +392,80 @@ fun SMSScreen(
                 shape = RoundedCornerShape(16.dp),
             )
         }
+
+        // Custom from/to scan window
+        if (showDateRangePicker) {
+            val rangeState = rememberDateRangePickerState(
+                initialSelectedStartDateMillis = smsScanFromDate.takeIf { it > 0L },
+                initialSelectedEndDateMillis = smsScanToDate.takeIf { it > 0L }
+            )
+            DatePickerDialog(
+                onDismissRequest = { showDateRangePicker = false },
+                confirmButton = {
+                    TextButton(
+                        enabled = rangeState.selectedStartDateMillis != null,
+                        onClick = {
+                            val start = rangeState.selectedStartDateMillis
+                            if (start != null) {
+                                // No end date selected means "from this date until now".
+                                val end = rangeState.selectedEndDateMillis ?: start
+                                settingsViewModel.updateSmsScanDateRange(
+                                    pickerDateToLocalMillis(start, endOfDay = false),
+                                    pickerDateToLocalMillis(end, endOfDay = true)
+                                )
+                            }
+                            showDateRangePicker = false
+                        }
+                    ) {
+                        Text(stringResource(R.string.save_changes))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDateRangePicker = false }) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                }
+            ) {
+                DateRangePicker(
+                    state = rangeState,
+                    showModeToggle = true,
+                    title = {
+                        Text(
+                            text = stringResource(R.string.scan_custom_range_title),
+                            modifier = Modifier.padding(start = Spacing.xl, top = Spacing.md)
+                        )
+                    }
+                )
+            }
+        }
     }
+}
+
+/** Formats a stored scan-window bound for display. */
+private fun formatScanDate(millis: Long): String =
+    SimpleDateFormat("d MMM yyyy", Locale.getDefault()).format(Date(millis))
+
+/**
+ * The Material date picker reports UTC midnight for the day the user tapped.
+ * Rebuild that calendar day in the device's own timezone so the window lines up
+ * with the local timestamps stored against each message.
+ */
+private fun pickerDateToLocalMillis(utcMillis: Long, endOfDay: Boolean): Long {
+    val utc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply { timeInMillis = utcMillis }
+    return Calendar.getInstance().apply {
+        set(Calendar.YEAR, utc.get(Calendar.YEAR))
+        set(Calendar.MONTH, utc.get(Calendar.MONTH))
+        set(Calendar.DAY_OF_MONTH, utc.get(Calendar.DAY_OF_MONTH))
+        if (endOfDay) {
+            set(Calendar.HOUR_OF_DAY, 23)
+            set(Calendar.MINUTE, 59)
+            set(Calendar.SECOND, 59)
+            set(Calendar.MILLISECOND, 999)
+        } else {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+    }.timeInMillis
 }

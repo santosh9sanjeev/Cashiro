@@ -100,6 +100,10 @@ class CardRepository @Inject constructor(
     suspend fun unlinkCard(cardId: Long) {
         cardDao.linkCardToAccount(cardId, null)
     }
+
+    suspend fun relinkCardsToAccount(oldAccountLast4: String, newAccountLast4: String): Int {
+        return cardDao.relinkCardsToAccount(oldAccountLast4, newAccountLast4)
+    }
     
     suspend fun setCardActive(cardId: Long, isActive: Boolean) {
         cardDao.setCardActive(cardId, isActive)

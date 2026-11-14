@@ -127,6 +127,9 @@ class SettingsViewModel @Inject constructor(
     // SMS scan period state
     val smsScanMonths = userPreferencesRepository.smsScanMonths
     val smsScanAllTime = userPreferencesRepository.smsScanAllTime
+    val smsScanCustomRange = userPreferencesRepository.smsScanCustomRange
+    val smsScanFromDate = userPreferencesRepository.smsScanFromDate
+    val smsScanToDate = userPreferencesRepository.smsScanToDate
 
     // Unrecognized SMS state
     val unreportedSmsCount = unrecognizedSmsRepository.getUnreportedCount()
@@ -535,6 +538,26 @@ class SettingsViewModel @Inject constructor(
             }
 
             userPreferencesRepository.updateSmsScanAllTime(allTime)
+        }
+    }
+
+    /**
+     * Scan an explicit from/to window instead of one of the month presets.
+     * Both bounds are epoch millis; [toDate] is inclusive.
+     */
+    fun updateSmsScanDateRange(fromDate: Long, toDate: Long) {
+        viewModelScope.launch {
+            // An arbitrary window is never a superset of the last one, so the scan
+            // state is reset and the chosen range is always read in full.
+            userPreferencesRepository.setLastScanTimestamp(0L)
+            userPreferencesRepository.updateSmsScanDateRange(fromDate, toDate)
+            Log.d("SettingsViewModel", "Custom scan range set: $fromDate..$toDate - will perform full scan")
+        }
+    }
+
+    fun clearSmsScanDateRange() {
+        viewModelScope.launch {
+            userPreferencesRepository.updateSmsScanCustomRange(false)
         }
     }
 

@@ -232,6 +232,10 @@ class AccountBalanceRepository @Inject constructor(
         return accountBalanceDao.deleteAccount(bankName, accountLast4)
     }
 
+    suspend fun updateAccountLast4(bankName: String, oldAccountLast4: String, newAccountLast4: String): Int {
+        return accountBalanceDao.updateAccountLast4(bankName, oldAccountLast4, newAccountLast4)
+    }
+
     suspend fun updateAccountBankName(oldBankName: String, accountLast4: String, newBankName: String): Int {
         return accountBalanceDao.updateAccountBankName(oldBankName, accountLast4, newBankName)
     }

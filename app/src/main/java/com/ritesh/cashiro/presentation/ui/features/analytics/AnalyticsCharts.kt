@@ -318,7 +318,8 @@ fun SpendingBarChart(
 fun CategoryPieChart(
     modifier: Modifier = Modifier,
     categories: List<CategoryData>,
-    currency: String
+    currency: String,
+    onCategoryClick: (String) -> Unit = {}
 ) {
     if (categories.isEmpty()) return
 
@@ -364,9 +365,13 @@ fun CategoryPieChart(
                 data = chartData,
                 onPieClick = { clickedPie ->
                     val pieIndex = chartData.indexOf(clickedPie)
+                    val alreadySelected = chartData.getOrNull(pieIndex)?.selected == true
                     chartData = chartData.mapIndexed { index, pie ->
                         pie.copy(selected = index == pieIndex)
                     }
+                    // First tap highlights the slice; tapping the already-selected
+                    // slice drills into that category's transactions.
+                    if (alreadySelected) clickedPie.label?.let(onCategoryClick)
                 },
                 selectedScale = 1.1f,
                 scaleAnimEnterSpec = spring(
@@ -418,6 +423,7 @@ fun CategoryPieChart(
                         chartData = chartData.mapIndexed { index, p ->
                             p.copy(selected = index == pieIndex)
                         }
+                        pie.label?.let(onCategoryClick)
                     }
                 )
             }

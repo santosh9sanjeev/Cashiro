@@ -356,6 +356,10 @@ constructor(
                 iconResId = latestBalance?.iconResId ?: 0,
                 iconName = latestBalance?.iconName ?: "",
                 isWallet = latestBalance?.isWallet ?: false,
+                // Must be preserved, otherwise a manual balance update turns a
+                // credit card into a normal account and the outstanding/limit
+                // maths stops applying to it.
+                isCreditCard = latestBalance?.isCreditCard ?: false,
                 sourceType = "MANUAL",
                 currency = latestBalance?.currency ?: resolveDefaultCurrency(),
                 color = latestBalance?.color ?: "#33B5E5"
@@ -602,6 +606,7 @@ constructor(
             oldBankName: String,
             accountLast4: String,
             newBankName: String,
+            newAccountLast4: String = accountLast4,
             newBalance: BigDecimal,
             newCreditLimit: BigDecimal?,
             isCreditCard: Boolean,
@@ -618,17 +623,69 @@ constructor(
                     ?: latestBalance?.currency
                     ?: resolveDefaultCurrency()
 
+                // Renumber the account if the user changed the last 4 digits.
+                // Accounts are keyed by (bankName, accountLast4), so every table
+                // that references the old pair has to be migrated together or the
+                // account splits in two and the old number becomes unreachable.
+                val targetLast4 = newAccountLast4.takeIf { it.isNotBlank() } ?: accountLast4
+                if (targetLast4 != accountLast4) {
+                    val clash = accountBalanceRepository.getLatestBalance(newBankName, targetLast4)
+                    if (clash != null) {
+                        _uiState.update {
+                            it.copy(
+                                errorMessage =
+                                    "An account ending $targetLast4 already exists for $newBankName"
+                            )
+                        }
+                        return@launch
+                    }
+
+                    accountBalanceRepository.updateAccountLast4(
+                        oldBankName,
+                        accountLast4,
+                        targetLast4
+                    )
+                    transactionRepository.updateAccountForTransactions(
+                        oldBankName = oldBankName,
+                        oldAccountNumber = accountLast4,
+                        newBankName = oldBankName,
+                        newAccountNumber = targetLast4
+                    )
+                    cardRepository.relinkCardsToAccount(accountLast4, targetLast4)
+
+                    // Carry the preference keys across so the account does not lose
+                    // its hidden/main status when it is renumbered.
+                    val oldLast4Key = "${oldBankName}_${accountLast4}"
+                    val newLast4Key = "${oldBankName}_${targetLast4}"
+                    val hiddenAfterRenumber = _uiState.value.hiddenAccounts.toMutableSet()
+                    if (hiddenAfterRenumber.remove(oldLast4Key)) {
+                        hiddenAfterRenumber.add(newLast4Key)
+                        sharedPrefs.edit { putStringSet("hidden_accounts", hiddenAfterRenumber) }
+                        _uiState.update { it.copy(hiddenAccounts = hiddenAfterRenumber) }
+                    }
+                    if (_uiState.value.mainAccountKey == oldLast4Key) {
+                        sharedPrefs.edit { putString("main_account", newLast4Key) }
+                        _uiState.update { it.copy(mainAccountKey = newLast4Key) }
+                    }
+                }
+
                 // Update bank name if changed
                 if (newBankName != oldBankName) {
                     accountBalanceRepository.updateAccountBankName(
                         oldBankName,
-                        accountLast4,
+                        targetLast4,
                         newBankName
+                    )
+                    transactionRepository.updateAccountForTransactions(
+                        oldBankName = oldBankName,
+                        oldAccountNumber = targetLast4,
+                        newBankName = newBankName,
+                        newAccountNumber = targetLast4
                     )
 
                     // Update hidden accounts preference if bank name changed
-                    val oldKey = "${oldBankName}_${accountLast4}"
-                    val newKey = "${newBankName}_${accountLast4}"
+                    val oldKey = "${oldBankName}_${targetLast4}"
+                    val newKey = "${newBankName}_${targetLast4}"
                     val hidden = _uiState.value.hiddenAccounts.toMutableSet()
                     if (hidden.contains(oldKey)) {
                         hidden.remove(oldKey)
@@ -648,7 +705,7 @@ constructor(
                 accountBalanceRepository.insertBalance(
                     AccountBalanceEntity(
                         bankName = newBankName,
-                        accountLast4 = accountLast4,
+                        accountLast4 = targetLast4,
                         balance = newBalance,
                         creditLimit = newCreditLimit,
                         timestamp = LocalDateTime.now(),
