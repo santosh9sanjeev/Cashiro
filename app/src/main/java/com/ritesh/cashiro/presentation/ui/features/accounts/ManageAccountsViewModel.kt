@@ -8,6 +8,7 @@ import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
 import com.ritesh.cashiro.data.database.entity.CardEntity
 import com.ritesh.cashiro.data.database.entity.CardType
 import com.ritesh.cashiro.data.preferences.UserPreferencesRepository
+import com.ritesh.cashiro.data.currency.CurrencyConversionService
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.CardRepository
 import com.ritesh.cashiro.data.repository.TransactionRepository
@@ -62,6 +63,7 @@ class ManageAccountsViewModel
 constructor(
     @ApplicationContext private val context: Context,
     private val accountBalanceRepository: AccountBalanceRepository,
+    private val currencyConversionService: CurrencyConversionService,
     private val cardRepository: CardRepository,
     private val transactionRepository: TransactionRepository,
     private val userPreferencesRepository: UserPreferencesRepository
@@ -741,11 +743,30 @@ constructor(
         }
     }
 
-    fun mergeAccounts(targetAccount: AccountBalanceEntity, sourceAccounts: List<AccountBalanceEntity>, newBalance: BigDecimal?
+    fun mergeAccounts(
+        targetAccount: AccountBalanceEntity,
+        sourceAccounts: List<AccountBalanceEntity>,
+        newBalance: BigDecimal?,
+        sumBalances: Boolean = false
     ) {
         viewModelScope.launch {
             try {
                 _uiState.update { it.copy(isLoading = true) }
+
+                // Summing has to happen here rather than in the UI: the accounts
+                // being merged can hold different currencies, and adding those
+                // figures together raw produces a meaningless total.
+                val mergedBalance = if (sumBalances) {
+                    var total = targetAccount.balance
+                    for (source in sourceAccounts) {
+                        total += currencyConversionService.convertAmount(
+                            amount = source.balance,
+                            fromCurrency = source.currency,
+                            toCurrency = targetAccount.currency
+                        )
+                    }
+                    total
+                } else newBalance
 
                 //Reassign transactions
                 sourceAccounts.forEach { source ->
@@ -757,11 +778,11 @@ constructor(
                 }
 
                 // Update target balance if requested
-                if (newBalance != null) {
+                if (mergedBalance != null) {
                     accountBalanceRepository.insertBalance(AccountBalanceEntity(
                         bankName = targetAccount.bankName,
                         accountLast4 = targetAccount.accountLast4,
-                        balance = newBalance,
+                        balance = mergedBalance,
                         creditLimit = targetAccount.creditLimit,
                         timestamp = LocalDateTime.now(),
                         isCreditCard = targetAccount.isCreditCard,

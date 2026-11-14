@@ -252,7 +252,9 @@ class LendBorrowRepository @Inject constructor(
             val recordCurrency = account?.currency ?: currency
             entry = entry.copy(currency = recordCurrency)
             val walletId = transactionRepository.insertTransaction(
-                buildWalletTransaction(entry, personName, currency, account)
+                // recordCurrency, not the base currency: the entry's amount is
+                // denominated in the linked account's currency.
+                buildWalletTransaction(entry, personName, recordCurrency, account)
             )
             entry = entry.copy(transactionId = walletId)
             if (account != null) {
@@ -267,7 +269,7 @@ class LendBorrowRepository @Inject constructor(
                     creditLimit = null,
                     isCreditCard = account.isCreditCard,
                     smsSource = null,
-                    currency = currency
+                    currency = recordCurrency
                 )
             }
         }

@@ -154,6 +154,7 @@ fun ManageAccountsScreen(
         mutableStateOf<List<AccountBalanceEntity>>(emptyList())
     }
     var mergeNewBalance by remember { mutableStateOf<BigDecimal?>(null) }
+    var mergeShouldSum by remember { mutableStateOf(false) }
     var selectedCardForLink by remember { mutableStateOf<CardEntity?>(null) }
 
     LaunchedEffect(lazyListState) {
@@ -913,8 +914,11 @@ fun ManageAccountsScreen(
             onOptionSelected = { option ->
                 when (option) {
                     BalanceMergeOption.SUM -> {
+                        // Preview only. The real total is recomputed in the
+                        // viewmodel with currency conversion applied.
                         val sumBalance = selectedMergeAccounts.sumOfBigDecimal { acc: AccountBalanceEntity -> acc.balance } + accountForMerge!!.balance
                         mergeNewBalance = sumBalance
+                        mergeShouldSum = true
                         showMergeBalanceOption = false
                         showMergeConfirmation = true
                     }
@@ -972,8 +976,10 @@ fun ManageAccountsScreen(
                 manageAccountsViewModel.mergeAccounts(
                     targetAccount = accountForMerge!!,
                     sourceAccounts = selectedMergeAccounts,
-                    newBalance = mergeNewBalance!!
+                    newBalance = mergeNewBalance!!,
+                    sumBalances = mergeShouldSum
                 )
+                mergeShouldSum = false
                 showMergeConfirmation = false
                 accountForMerge = null
                 selectedMergeAccounts = emptyList()

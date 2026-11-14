@@ -246,10 +246,10 @@ class TransactionRepository @Inject constructor(
         // to it and a payment has to subtract — the opposite of a bank account.
         val signed = if (latestBalance.isCreditCard) converted.negate() else converted
         val delta = if (reverse) signed.negate() else signed
-        // Only an outstanding amount has a floor at zero. Clamping a normal
-        // account here made reversals silently lose money.
-        val raw = latestBalance.balance + delta
-        val newBalance = if (latestBalance.isCreditCard) raw.max(BigDecimal.ZERO) else raw
+        // Unclamped, matching calculateTransactionBalance: an overdrawn account
+        // and an overpaid card are both real states, and clamping made reversals
+        // silently lose money.
+        val newBalance = latestBalance.balance + delta
 
         accountBalanceRepository.insertBalance(
             AccountBalanceEntity(

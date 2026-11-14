@@ -655,12 +655,16 @@ class TransactionsViewModel @Inject constructor(
                     val accountLast4 = txn.accountNumber
                     val timestamp = updatedDateTime
 
-                    val oldEffect = balanceEffect(txn.amount, txn.transactionType)
-                    val newEffect = balanceEffect(updatedAmount, txn.transactionType)
+                    val isCreditCard = accountBalanceRepository
+                        .getLatestBalance(bankName, accountLast4)?.isCreditCard ?: false
+                    val oldEffect = balanceEffect(txn.amount, txn.transactionType, isCreditCard)
+                    val newEffect = balanceEffect(updatedAmount, txn.transactionType, isCreditCard)
 
                     val linkedEntry = accountBalanceRepository.getBalanceByTransactionId(txn.id)
                     if (linkedEntry != null) {
-                        val newBalance = (linkedEntry.balance - oldEffect + newEffect).max(BigDecimal.ZERO)
+                        // Unclamped: clamping here silently discarded the edit when
+                        // the result would have gone below zero.
+                        val newBalance = linkedEntry.balance - oldEffect + newEffect
                         accountBalanceRepository.updateBalance(linkedEntry.copy(balance = newBalance))
                         accountBalanceRepository.recalculateBalancesAfter(bankName, accountLast4, timestamp, newBalance)
                     }
@@ -673,12 +677,19 @@ class TransactionsViewModel @Inject constructor(
         }
     }
 
-    private fun balanceEffect(amount: BigDecimal, type: TransactionType): BigDecimal {
-        return when (type) {
+    private fun balanceEffect(
+        amount: BigDecimal,
+        type: TransactionType,
+        isCreditCard: Boolean = false
+    ): BigDecimal {
+        val effect = when (type) {
             TransactionType.INCOME, TransactionType.CREDIT -> amount
             TransactionType.EXPENSE, TransactionType.INVESTMENT -> amount.negate()
             else -> BigDecimal.ZERO
         }
+        // A credit card balance is an outstanding amount, so every effect is
+        // mirrored: spending adds to it and a payment subtracts from it.
+        return if (isCreditCard) effect.negate() else effect
     }
 
     fun resetFilters() {
