@@ -880,8 +880,76 @@ class TransactionDetailViewModel @Inject constructor(
             handleTransferBalanceEdit(oldTransaction, newTransaction)
             return
         }
+        // Moving a transaction to a different account has to take its effect off
+        // the old account and put it on the new one. Previously only the old
+        // account was ever touched, so the destination never saw the transaction
+        // and kept reporting zero while transactions were listed against it.
+        val accountChanged =
+            oldTransaction.bankName != newTransaction.bankName ||
+                oldTransaction.accountNumber != newTransaction.accountNumber
+        if (accountChanged) {
+            moveTransactionBetweenAccounts(oldTransaction, newTransaction)
+            return
+        }
+
         if (oldTransaction.bankName != null && oldTransaction.accountNumber != null) {
             updateNonTransferBalance(oldTransaction, newTransaction)
+        }
+    }
+
+    /**
+     * Re-homes a transaction's balance effect when its account changes.
+     *
+     * The balance row linked to the transaction is deleted from the old account
+     * and that account recalculated forward, then the transaction is applied to
+     * the new account through the normal insert path so credit cards, currency
+     * conversion and the forward cascade all behave as they do everywhere else.
+     */
+    private suspend fun moveTransactionBetweenAccounts(
+        oldTransaction: TransactionEntity,
+        newTransaction: TransactionEntity
+    ) {
+        val timestamp = oldTransaction.dateTime ?: LocalDateTime.now()
+
+        val oldBank = oldTransaction.bankName
+        val oldLast4 = oldTransaction.accountNumber
+        if (oldBank != null && oldLast4 != null) {
+            val linkedEntry = accountBalanceRepository.getBalanceByTransactionId(oldTransaction.id)
+            if (linkedEntry != null) {
+                val previous = accountBalanceRepository
+                    .getLatestBalanceOnOrBefore(oldBank, oldLast4, timestamp.minusNanos(1))
+                accountBalanceRepository.deleteBalanceById(linkedEntry.id)
+                accountBalanceRepository.recalculateBalancesAfter(
+                    oldBank,
+                    oldLast4,
+                    timestamp,
+                    previous?.balance ?: BigDecimal.ZERO
+                )
+            }
+        }
+
+        val newBank = newTransaction.bankName
+        val newLast4 = newTransaction.accountNumber
+        if (newBank != null && newLast4 != null) {
+            val target = accountBalanceRepository.getLatestBalance(newBank, newLast4)
+            val targetCurrency = target?.currency ?: newTransaction.currency
+            accountBalanceRepository.insertTransactionBalance(
+                bankName = newBank,
+                accountLast4 = newLast4,
+                amount = currencyConversionService.convertAmount(
+                    newTransaction.amount,
+                    newTransaction.currency,
+                    targetCurrency
+                ),
+                transactionType = newTransaction.transactionType,
+                explicitBalance = null,
+                timestamp = newTransaction.dateTime ?: timestamp,
+                transactionId = newTransaction.id,
+                creditLimit = null,
+                isCreditCard = target?.isCreditCard ?: false,
+                smsSource = null,
+                currency = targetCurrency
+            )
         }
     }
 

@@ -43,7 +43,13 @@ class BalanceUpdateProcessor @Inject constructor(
             var card = cardRepository.getCard(parsedTransaction.bankName, fallbackAccountLast4)
 
             if (card == null) {
-                val isCredit = (parsedTransaction.type.toEntityType() == TransactionType.CREDIT)
+                // Card spending arrives as EXPENSE, so the transaction type alone
+                // would classify a credit card as a debit card. If the user already
+                // has an account under this number, trust how they set it up.
+                val existingAccount = accountBalanceRepository
+                    .getLatestBalance(parsedTransaction.bankName, fallbackAccountLast4)
+                val isCredit = (parsedTransaction.type.toEntityType() == TransactionType.CREDIT) ||
+                        (existingAccount?.isCreditCard ?: false)
                 cardRepository.findOrCreateCard(
                     cardLast4 = fallbackAccountLast4,
                     bankName = parsedTransaction.bankName,
@@ -69,7 +75,12 @@ class BalanceUpdateProcessor @Inject constructor(
                 when {
                     card.cardType == CardType.CREDIT -> fallbackAccountLast4
                     card.cardType == CardType.DEBIT && card.accountLast4 != null -> card.accountLast4
-                    else -> null
+                    // An unlinked card used to return null here, which dropped the
+                    // balance update silently: the transaction was saved and listed
+                    // against the account, but the account itself never moved and
+                    // kept reporting zero. Attribute it to the card's own number
+                    // instead, which is the account the user sees for that card.
+                    else -> fallbackAccountLast4
                 }
             }
         } else {

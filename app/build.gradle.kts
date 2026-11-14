@@ -45,6 +45,20 @@ android {
 
 
     signingConfigs {
+        getByName("debug") {
+            // A keystore checked into the repo, so every build signs with the
+            // same key. Without it each CI machine generates its own debug
+            // keystore, the signature changes between builds, and Android
+            // refuses to install the new APK over the old one.
+            //
+            // Safe to commit: this signs debug builds only, never a release,
+            // and uses the well-known Android debug credentials.
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+
         create("release") {
             // Default to values from local.properties if available
             val localPropertiesFile = rootProject.file("local.properties")

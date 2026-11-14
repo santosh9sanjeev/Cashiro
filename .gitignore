@@ -60,6 +60,9 @@ RELEASE_NOTES.md
 # Keystore files (never commit these!)
 *.jks
 *.keystore
+# The debug keystore is deliberately tracked so every build signs with the same
+# key and the APK installs as an update rather than needing an uninstall.
+!app/debug.keystore
 release.properties
 
 *.pem
