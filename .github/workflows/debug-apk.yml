@@ -39,6 +39,9 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Run balance maths tests
+        run: ./gradlew :app:testStandardDebugUnitTest --tests "com.ritesh.cashiro.data.database.dao.BalanceMathTest" --stacktrace
+
       - name: Build standard debug APK
         env:
           GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx5G

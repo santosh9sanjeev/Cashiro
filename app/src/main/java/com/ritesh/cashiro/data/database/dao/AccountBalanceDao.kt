@@ -444,7 +444,7 @@ data class AccountBalanceTransactionInfo(
     val isDeleted: Boolean?
 )
 
-private fun calculateTransactionBalance(
+internal fun calculateTransactionBalance(
     currentBalance: BigDecimal,
     amount: BigDecimal,
     transactionType: TransactionType,
