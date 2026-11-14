@@ -407,12 +407,12 @@ class AccountBalanceRepositoryTest {
         assertNotNull(balanceT2)
         assertEquals(BigDecimal("700"), balanceT2.balance)
 
-        // The manual row set the account to 2000: a balance the user typed. The
-        // backdated expense moves it by exactly its own amount, so the user's
-        // figure is neither thrown away nor left ignoring the expense.
+        // The manual row set the account to 2000 from 1000: a correction by the
+        // user. It already accounts for everything before it, so it stays as the
+        // user typed it instead of being overwritten with the running balance.
         val balanceT3 = dao.balances.find { it.timestamp == t3 }
         assertNotNull(balanceT3)
-        assertEquals(BigDecimal("1700"), balanceT3.balance)
+        assertEquals(BigDecimal("2000"), balanceT3.balance)
     }
 
     @Test

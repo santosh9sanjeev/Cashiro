@@ -334,16 +334,14 @@ class AccountBalanceRepository @Inject constructor(
         accountLast4: String,
         timestamp: LocalDateTime,
         startingBalance: BigDecimal,
-        previousOldBalance: BigDecimal? = null,
-        correctionShift: BigDecimal? = null
+        previousOldBalance: BigDecimal? = null
     ) {
         accountBalanceDao.recalculateBalancesAfter(
             bankName,
             accountLast4,
             timestamp,
             startingBalance,
-            previousOldBalance,
-            correctionShift
+            previousOldBalance
         )
     }
 }

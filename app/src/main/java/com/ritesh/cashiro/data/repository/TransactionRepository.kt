@@ -249,8 +249,8 @@ class TransactionRepository @Inject constructor(
             val before = accountBalanceRepository.getLatestBalanceOnOrBefore(
                 current.bankName, current.accountLast4, current.timestamp.minusNanos(1)
             )
-            val effect = effectOn(current, rowLegType(current, transaction), transaction)
-            val base = before?.balance ?: (current.balance - effect)
+            val base = before?.balance
+                ?: (current.balance - effectOn(current, rowLegType(current, transaction), transaction))
 
             neutralised += NeutralisedRow(
                 rowId = current.id,
@@ -271,8 +271,7 @@ class TransactionRepository @Inject constructor(
                 current.accountLast4,
                 current.timestamp,
                 base,
-                previousOldBalance = current.balance,
-                correctionShift = effect.negate()
+                previousOldBalance = current.balance
             )
         }
         deletedRowsByTransaction[transaction.id] = neutralised
@@ -309,8 +308,7 @@ class TransactionRepository @Inject constructor(
                 current.accountLast4,
                 current.timestamp,
                 restored,
-                previousOldBalance = current.balance,
-                correctionShift = effectOn(entry.original, rowLegType(entry.original, transaction), transaction)
+                previousOldBalance = current.balance
             )
         }
     }
@@ -505,10 +503,9 @@ class TransactionRepository @Inject constructor(
         val before = accountBalanceRepository.getLatestBalanceOnOrBefore(
             row.bankName, row.accountLast4, row.timestamp.minusNanos(1)
         )
-        val oldEffect = effectOn(row, oldLeg?.type ?: legTypeWithoutLeg(old), old)
-        val newEffect = effectOn(row, leg.type, new)
-        val base = before?.balance ?: (row.balance - oldEffect)
-        val updated = base + newEffect
+        val base = before?.balance
+            ?: (row.balance - effectOn(row, oldLeg?.type ?: legTypeWithoutLeg(old), old))
+        val updated = base + effectOn(row, leg.type, new)
         if (updated.compareTo(row.balance) == 0) return
 
         accountBalanceRepository.updateBalance(row.copy(balance = updated))
@@ -517,8 +514,7 @@ class TransactionRepository @Inject constructor(
             row.accountLast4,
             row.timestamp,
             updated,
-            previousOldBalance = row.balance,
-            correctionShift = newEffect - oldEffect
+            previousOldBalance = row.balance
         )
     }
 
@@ -547,16 +543,15 @@ class TransactionRepository @Inject constructor(
         val before = accountBalanceRepository.getLatestBalanceOnOrBefore(
             current.bankName, current.accountLast4, current.timestamp.minusNanos(1)
         )
-        val effect = effectOn(current, oldLeg?.type ?: legTypeWithoutLeg(old), old)
-        val base = before?.balance ?: (current.balance - effect)
+        val base = before?.balance
+            ?: (current.balance - effectOn(current, oldLeg?.type ?: legTypeWithoutLeg(old), old))
         accountBalanceRepository.deleteBalanceById(current.id)
         accountBalanceRepository.recalculateBalancesAfter(
             current.bankName,
             current.accountLast4,
             current.timestamp,
             base,
-            previousOldBalance = current.balance,
-            correctionShift = effect.negate()
+            previousOldBalance = current.balance
         )
     }
 

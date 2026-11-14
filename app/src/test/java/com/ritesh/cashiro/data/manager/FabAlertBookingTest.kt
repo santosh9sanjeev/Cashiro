@@ -182,11 +182,12 @@ class FabAlertBookingTest {
     }
 
     @Test
-    fun `a payment synced after the user set the balance still comes out of the account`() = runTest {
+    fun `a balance the user set counts only payments dated after it`() = runTest {
         openAccount(account, "5000")
         openCreditCard(outstanding = "500")
-        // Late in the evening the user sets the account to 1000, then syncs the
-        // messages, including a card payment made earlier that evening.
+        // Late in the evening the user sets the account to 1000. A card payment
+        // made earlier that evening is already part of that figure; one made
+        // after it comes out of it.
         balanceDao.seedBalance(
             AccountBalanceEntity(
                 bankName = userBank,
@@ -203,8 +204,16 @@ class FabAlertBookingTest {
             at = LocalDateTime.of(2026, 11, 14, 21, 37)
         )
 
-        assertBalance("900", userBank, account, "the payment comes out of the balance the user set")
-        assertBalance("400", cardBank, card, "and off what the card owes")
+        assertBalance("1000", userBank, account, "a payment dated before the set balance is already in it")
+        assertBalance("400", cardBank, card, "the card had no balance set after it, so it moves")
+
+        receive(
+            "Dear Customer, Your payment instructions of AED 50.00 to ***$card has been processed on 15/11/2026 09:10",
+            at = LocalDateTime.of(2026, 11, 15, 9, 10)
+        )
+
+        assertBalance("950", userBank, account, "a payment dated after the set balance comes out of it")
+        assertBalance("350", cardBank, card, "and off what the card owes")
     }
 
     @Test
@@ -233,7 +242,7 @@ class FabAlertBookingTest {
     }
 
     @Test
-    fun `deleting an older transaction moves a balance the user set by its amount`() = runTest {
+    fun `a balance the user set stays when an older transaction is deleted`() = runTest {
         openAccount(account, "10000")
         val addTransaction = AddTransactionUseCase(
             repository,
@@ -278,7 +287,7 @@ class FabAlertBookingTest {
 
         repository.deleteTransaction(transactionDao.byId(olderId)!!)
 
-        assertBalance("9050", userBank, account, "the deleted expense's 100 comes back, on top of the user's figure")
+        assertBalance("8950", userBank, account, "the balance the user set already accounted for it")
     }
 
     // ---- helpers ----
