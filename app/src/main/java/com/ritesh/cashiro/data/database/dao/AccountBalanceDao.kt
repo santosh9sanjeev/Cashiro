@@ -176,7 +176,10 @@ abstract class AccountBalanceDao {
             accountLast4,
             slot,
             newBalance,
-            previousOldBalance = previous?.balance
+            previousOldBalance = previous?.balance,
+            // A balance the user typed in after this moment moves by exactly
+            // this transaction's effect.
+            correctionShift = balanceDelta(amount, transactionType, accountIsCreditCard)
         )
         return balanceId
     }
@@ -189,20 +192,29 @@ abstract class AccountBalanceDao {
      * transaction alone (see [keepsAppliedEffect]); their original effect is the
      * step from that balance to their own, and it is carried over unchanged.
      * Without it they fall back to being recalculated.
+     *
+     * [correctionShift] is how much the change that triggered this pass moved
+     * the transaction's own effect on the account: its effect for a transaction
+     * added, minus it for one deleted, the difference for one edited. A balance
+     * the user typed in moves by exactly that, so syncing, adding, editing or
+     * deleting a transaction dated before it still changes the balance by that
+     * transaction's amount, and undoing it changes it back.
      */
     open suspend fun recalculateBalancesAfter(
         bankName: String,
         accountLast4: String,
         timestamp: LocalDateTime,
         startingBalance: BigDecimal,
-        previousOldBalance: BigDecimal? = null
+        previousOldBalance: BigDecimal? = null,
+        correctionShift: BigDecimal? = null
     ) {
         recalculateBalancesAfterInternal(
             bankName,
             accountLast4,
             timestamp,
             startingBalance,
-            previousOldBalance
+            previousOldBalance,
+            correctionShift
         )
     }
 
@@ -211,7 +223,8 @@ abstract class AccountBalanceDao {
         accountLast4: String,
         timestamp: LocalDateTime,
         startingBalance: BigDecimal,
-        previousOldBalance: BigDecimal?
+        previousOldBalance: BigDecimal?,
+        correctionShift: BigDecimal?
     ) {
         var runningBalance = startingBalance
         var previousOld = previousOldBalance
@@ -222,24 +235,23 @@ abstract class AccountBalanceDao {
             previousOld = originalBalance
 
             if (sourceType == SOURCE_MANUAL) {
-                // A balance the user typed in that differs from what the account
-                // held just before it is a correction: the user stating what the
-                // account really holds at that moment. It already accounts for
-                // everything before it, so it stops the pass like a bank-reported
-                // balance. Carrying the running balance into it instead silently
-                // threw the user's figure away the next time anything earlier was
-                // added, edited or deleted.
-                val isCorrection = balanceBeforeRow != null &&
-                    originalBalance.compareTo(balanceBeforeRow) != 0
-                if (isCorrection) {
-                    break
+                // A balance the user typed in. A transaction synced, added, edited
+                // or deleted before it moves it by exactly that transaction's
+                // change, so it neither swallows the transaction (the account
+                // stayed where the user set it while the card moved) nor is thrown
+                // away for the running balance (losing the user's figure).
+                val shifted = when {
+                    correctionShift != null -> originalBalance + correctionShift
+                    // No change to carry (a bank balance being restored). A
+                    // correction the user made stands; a row that records no
+                    // change of its own follows the running balance.
+                    balanceBeforeRow != null && originalBalance.compareTo(balanceBeforeRow) != 0 -> null
+                    else -> runningBalance
+                } ?: break
+                if (shifted != row.balance) {
+                    updateAndInvalidate(row.id, shifted)
                 }
-                // Otherwise it records no change of its own (an account's first
-                // row, or an edit of its name or icon), so a backdated transaction
-                // carries through it to the rows after it.
-                if (runningBalance != row.balance) {
-                    updateAndInvalidate(row.id, runningBalance)
-                }
+                runningBalance = shifted
                 continue
             }
 

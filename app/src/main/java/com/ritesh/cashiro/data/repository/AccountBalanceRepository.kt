@@ -117,6 +117,15 @@ class AccountBalanceRepository @Inject constructor(
         return if (candidates.size == 1) entity.copy(bankName = candidates.single().bankName) else entity
     }
 
+    /**
+     * The account the user marked as their main one, as "bankName_last4", or
+     * null when none is set (or settings cannot be read, as in tests).
+     */
+    fun mainAccountKey(): String? = runCatching {
+        context.getSharedPreferences("account_prefs", Context.MODE_PRIVATE)
+            .getString("main_account", null)
+    }.getOrNull()
+
     fun getLatestBalanceFlow(bankName: String, accountLast4: String): Flow<AccountBalanceEntity?> {
         return accountBalanceDao.getLatestBalanceFlow(bankName, accountLast4)
     }
@@ -325,14 +334,16 @@ class AccountBalanceRepository @Inject constructor(
         accountLast4: String,
         timestamp: LocalDateTime,
         startingBalance: BigDecimal,
-        previousOldBalance: BigDecimal? = null
+        previousOldBalance: BigDecimal? = null,
+        correctionShift: BigDecimal? = null
     ) {
         accountBalanceDao.recalculateBalancesAfter(
             bankName,
             accountLast4,
             timestamp,
             startingBalance,
-            previousOldBalance
+            previousOldBalance,
+            correctionShift
         )
     }
 }

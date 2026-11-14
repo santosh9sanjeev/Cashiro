@@ -239,7 +239,7 @@ class BalanceUpdateProcessor @Inject constructor(
         } else {
             // The alert does not say which account paid. It came from the bank, so
             // it is the user's account there; with only one account it is that one.
-            inferPayingAccount(accounts, bankName, payee)
+            inferPayingAccount(accounts, bankName, parsed.sender, payee)
         }
         val destination = destinationOf(accounts, payee, source)
 
@@ -300,10 +300,17 @@ class BalanceUpdateProcessor @Inject constructor(
      * by hand is often named differently from the bank name on its alerts, so the
      * same account can also appear under the alert's name (created by an earlier
      * alert). Those count as one account, and the user's own naming is used.
+     *
+     * In order: the account under the alert's bank name or named the way the bank
+     * signs its messages ("FAB" for "First Abu Dhabi Bank"); the user's main
+     * account; the user's only bank account. Without the middle step, a user with
+     * a second account and their own name for the bank had the card credited and
+     * the paying account left untouched.
      */
     private fun inferPayingAccount(
         accounts: List<AccountBalanceEntity>,
         bankName: String,
+        sender: String,
         payee: String
     ): AccountKey? {
         val spendable = accounts.filter { !it.isCreditCard && !it.isWallet && it.accountLast4 != payee }
@@ -314,11 +321,36 @@ class BalanceUpdateProcessor @Inject constructor(
             .filter { it.bankName.equals(bankName, ignoreCase = true) }
             .map { it.accountLast4 }
             .toSet()
-        val atThisBankAccounts = oneRowPerAccount.filter { it.accountLast4 in atThisBank }
-        val pick = atThisBankAccounts.singleOrNull()
+        val namedLikeThisBank = oneRowPerAccount.filter {
+            it.accountLast4 in atThisBank || namesSameBank(it.bankName, bankName, sender)
+        }
+        val mainKey = accountBalanceRepository.mainAccountKey()
+        val main = oneRowPerAccount.firstOrNull { "${it.bankName}_${it.accountLast4}" == mainKey }
+
+        val pick = namedLikeThisBank.singleOrNull()
+            ?: main?.takeIf { namedLikeThisBank.isEmpty() || it in namedLikeThisBank }
+            ?: namedLikeThisBank.maxByOrNull { it.timestamp }
             ?: oneRowPerAccount.singleOrNull()
-            ?: atThisBankAccounts.maxByOrNull { it.timestamp }
         return pick?.let { AccountKey(it.bankName, it.accountLast4) }
+    }
+
+    /**
+     * Whether an account the user named [accountBank] is at the bank whose alerts
+     * say [alertBank] and come from [sender]: the same name, the sender's name
+     * ("FAB"), or the bank's initials.
+     */
+    private fun namesSameBank(accountBank: String, alertBank: String, sender: String): Boolean {
+        val name = accountBank.filter { it.isLetterOrDigit() }.lowercase()
+        if (name.length < 2) return false
+        val alert = alertBank.filter { it.isLetterOrDigit() }.lowercase()
+        val from = sender.substringAfter('-').filter { it.isLetterOrDigit() }.lowercase()
+        val initials = alertBank.split(' ', '-', '.').filter { it.isNotBlank() }
+            .joinToString("") { it.take(1) }.lowercase()
+        return name == alert ||
+            alert.startsWith(name) ||
+            (from.length >= 2 && (name == from || name.startsWith(from) ||
+                (name.length >= 3 && from.startsWith(name)))) ||
+            name == initials
     }
 
     /**
