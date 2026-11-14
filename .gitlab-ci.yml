@@ -1,0 +1,44 @@
+# Builds an installable debug APK on GitLab CI.
+# Mirror of .github/workflows/debug-apk.yml, for when GitHub Actions is unavailable.
+# Download the APK from the job's Artifacts panel when the pipeline finishes.
+image: eclipse-temurin:17-jdk
+
+variables:
+  ANDROID_HOME: "$CI_PROJECT_DIR/android-sdk"
+  ANDROID_SDK_ROOT: "$CI_PROJECT_DIR/android-sdk"
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3G -Dorg.gradle.daemon=false"
+  CMDLINE_TOOLS_VERSION: "11076708"
+
+cache:
+  key: "cashiro-gradle"
+  paths:
+    - .gradle/caches
+    - .gradle/wrapper
+
+before_script:
+  - apt-get update -qq && apt-get install -y -qq unzip wget > /dev/null
+  # Android command-line tools only — no Android Studio involved.
+  - mkdir -p "$ANDROID_HOME/cmdline-tools"
+  - wget -q "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip" -O /tmp/tools.zip
+  - unzip -q /tmp/tools.zip -d "$ANDROID_HOME/cmdline-tools"
+  - mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+  - export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
+  - yes | sdkmanager --licenses > /dev/null 2>&1 || true
+  # compileSdk 36 and AGP 8.13.2 need these exact components.
+  - sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+  - chmod +x ./gradlew
+
+build-debug-apk:
+  stage: build
+  timeout: 1h
+  script:
+    - ./gradlew assembleStandardDebug --stacktrace --no-daemon
+    - mkdir -p artifacts
+    - find app/build/outputs/apk/standard/debug -name "*.apk" -exec cp {} artifacts/ \;
+    - ls -la artifacts/
+  artifacts:
+    name: "cashiro-debug-apk"
+    paths:
+      - artifacts/*.apk
+    expire_in: 30 days
