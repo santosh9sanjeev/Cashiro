@@ -1,5 +1,6 @@
 package com.ritesh.cashiro.data.repository
 
+import com.ritesh.cashiro.data.database.dao.balanceDelta
 import android.util.Log
 import com.ritesh.cashiro.data.currency.CurrencyConverter
 import com.ritesh.cashiro.data.database.dao.TransactionDao
@@ -204,9 +205,14 @@ class TransactionRepository @Inject constructor(
         val accountLast4 = transaction.accountNumber
 
         if (transaction.transactionType == TransactionType.TRANSFER) {
-            // Source loses the money, target receives it.
+            // A transfer is written as an EXPENSE leg on the source and an INCOME
+            // leg on the target (see AddTransactionUseCase), so it is undone with
+            // exactly those rules: a card source owes more, a card target owes less.
             if (bankName != null && accountLast4 != null) {
-                adjustBalance(bankName, accountLast4, transaction.amount.negate(), reverse, sourceType, transaction.currency)
+                adjustBalance(
+                    bankName, accountLast4, transaction.amount, TransactionType.EXPENSE,
+                    reverse, sourceType, transaction.currency
+                )
             }
             // Exclude the source so a transfer can never resolve back onto the
             // account it left, which would cancel itself out.
@@ -214,25 +220,26 @@ class TransactionRepository @Inject constructor(
                 findAccountByLast4(it, excludeBank = bankName, excludeLast4 = accountLast4)
             }
             if (target != null) {
-                adjustBalance(target.bankName, target.accountLast4, transaction.amount, reverse, sourceType, transaction.currency)
+                adjustBalance(
+                    target.bankName, target.accountLast4, transaction.amount, TransactionType.INCOME,
+                    reverse, sourceType, transaction.currency
+                )
             }
             return
         }
 
         if (bankName == null || accountLast4 == null) return
-
-        val effect = when (transaction.transactionType) {
-            TransactionType.CREDIT, TransactionType.INCOME, TransactionType.BORROWED -> transaction.amount
-            TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT -> transaction.amount.negate()
-            else -> return
-        }
-        adjustBalance(bankName, accountLast4, effect, reverse, sourceType, transaction.currency)
+        adjustBalance(
+            bankName, accountLast4, transaction.amount, transaction.transactionType,
+            reverse, sourceType, transaction.currency
+        )
     }
 
     private suspend fun adjustBalance(
         bankName: String,
         accountLast4: String,
-        effect: BigDecimal,
+        amount: BigDecimal,
+        effectiveType: TransactionType,
         reverse: Boolean,
         sourceType: String,
         currency: String
@@ -242,18 +249,18 @@ class TransactionRepository @Inject constructor(
         // The transaction may be denominated differently from the account it hits,
         // so convert before any arithmetic.
         val converted = currencyConversionService.convertAmount(
-            amount = effect.abs(),
+            amount = amount,
             fromCurrency = currency,
             toCurrency = latestBalance.currency
-        ).let { if (effect.signum() < 0) it.negate() else it }
+        )
 
-        // On a credit card the balance counts what is owed, so spending has to add
-        // to it and a payment has to subtract — the opposite of a bank account.
-        val signed = if (latestBalance.isCreditCard) converted.negate() else converted
-        val delta = if (reverse) signed.negate() else signed
+        // Exactly the rules used when the transaction was inserted, so undoing
+        // it and redoing it are exact inverses.
+        val applied = balanceDelta(converted, effectiveType, latestBalance.isCreditCard)
+        if (applied.signum() == 0) return
+        val delta = if (reverse) applied.negate() else applied
         // Unclamped, matching calculateTransactionBalance: an overdrawn account
-        // and an overpaid card are both real states, and clamping made reversals
-        // silently lose money.
+        // and an overpaid card are both real states.
         val newBalance = latestBalance.balance + delta
 
         accountBalanceRepository.insertBalance(

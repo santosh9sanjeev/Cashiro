@@ -1,5 +1,6 @@
 package com.ritesh.cashiro.presentation.ui.features.transactions
 
+import com.ritesh.cashiro.data.database.dao.balanceDelta
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
@@ -677,20 +678,12 @@ class TransactionsViewModel @Inject constructor(
         }
     }
 
+    /** The insert path's own rules; see balanceDelta. */
     private fun balanceEffect(
         amount: BigDecimal,
         type: TransactionType,
         isCreditCard: Boolean = false
-    ): BigDecimal {
-        val effect = when (type) {
-            TransactionType.INCOME, TransactionType.CREDIT -> amount
-            TransactionType.EXPENSE, TransactionType.INVESTMENT -> amount.negate()
-            else -> BigDecimal.ZERO
-        }
-        // A credit card balance is an outstanding amount, so every effect is
-        // mirrored: spending adds to it and a payment subtracts from it.
-        return if (isCreditCard) effect.negate() else effect
-    }
+    ): BigDecimal = balanceDelta(amount, type, isCreditCard)
 
     fun resetFilters() {
         hasAppliedInitialFilters = false

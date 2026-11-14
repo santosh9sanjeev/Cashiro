@@ -444,6 +444,22 @@ data class AccountBalanceTransactionInfo(
     val isDeleted: Boolean?
 )
 
+/**
+ * The signed change a transaction makes to an account's balance.
+ *
+ * Derived from [calculateTransactionBalance] rather than restated, so every
+ * caller that needs a delta - deletion, undo, edits, imports - applies exactly
+ * the rules the insert path uses. Restating them by hand is what let them
+ * drift: mirroring signs for credit cards treated a CREDIT card charge as money
+ * coming in, so deleting a charge raised the outstanding amount instead of
+ * lowering it.
+ */
+internal fun balanceDelta(
+    amount: BigDecimal,
+    transactionType: TransactionType,
+    isCreditCard: Boolean
+): BigDecimal = calculateTransactionBalance(BigDecimal.ZERO, amount, transactionType, isCreditCard)
+
 internal fun calculateTransactionBalance(
     currentBalance: BigDecimal,
     amount: BigDecimal,

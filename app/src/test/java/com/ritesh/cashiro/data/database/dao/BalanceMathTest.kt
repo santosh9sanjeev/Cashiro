@@ -24,6 +24,42 @@ class BalanceMathTest {
     private fun account(balance: String, amount: String, type: TransactionType) =
         calculateTransactionBalance(bd(balance), bd(amount), type, isCreditCard = false)
 
+    // ---- the delta every reversal, edit and import uses ----
+
+    @Test
+    fun `a card charge recorded as CREDIT adds to the outstanding amount`() {
+        assertEquals(bd("700"), card("500", "200", TransactionType.CREDIT))
+    }
+
+    @Test
+    fun `undoing a card charge lowers the outstanding amount`() {
+        // The bug this pins: mirroring signs by hand treated CREDIT as money
+        // coming in, so deleting a 5000 charge took a card from 30000 to 35000.
+        val delta = balanceDelta(bd("5000"), TransactionType.CREDIT, isCreditCard = true)
+        assertEquals(bd("25000"), bd("30000") - delta)
+    }
+
+    @Test
+    fun `undoing a card payment raises the outstanding amount`() {
+        val delta = balanceDelta(bd("100"), TransactionType.INCOME, isCreditCard = true)
+        assertEquals(bd("500"), bd("400") - delta)
+    }
+
+    @Test
+    fun `balanceDelta agrees with the formula for every type on every account kind`() {
+        val current = bd("1234.50")
+        val amount = bd("200.25")
+        for (type in TransactionType.values()) {
+            for (isCreditCard in listOf(true, false)) {
+                assertEquals(
+                    calculateTransactionBalance(current, amount, type, isCreditCard),
+                    current + balanceDelta(amount, type, isCreditCard),
+                    "type=$type card=$isCreditCard"
+                )
+            }
+        }
+    }
+
     // ---- credit cards: balance is an outstanding amount ----
 
     @Test

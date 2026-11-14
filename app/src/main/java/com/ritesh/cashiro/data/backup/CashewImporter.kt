@@ -1,5 +1,6 @@
 package com.ritesh.cashiro.data.backup
 
+import com.ritesh.cashiro.data.database.dao.balanceDelta
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
@@ -654,33 +655,23 @@ class CashewImporter @Inject constructor(
                     walletIsCreditCard[wallet.bankName] = wallet.isCreditCard
                 }
 
-                // Mirrors calculateTransactionBalance. The rules used to diverge
-                // here: BORROWED was subtracted rather than added, LENT and
-                // INVESTMENT were ignored entirely, and credit cards were treated
-                // as bank accounts, so an imported file produced balances that
-                // disagreed with the same transactions entered by hand.
-                fun applyToWallet(wallet: String, signedAmount: BigDecimal) {
-                    val mirrored =
-                        if (walletIsCreditCard[wallet] == true) signedAmount.negate()
-                        else signedAmount
-                    walletBalances[wallet] =
-                        (walletBalances[wallet] ?: BigDecimal.ZERO).add(mirrored)
+                // The insert path's own rules (balanceDelta), not a restatement of
+                // them. This used to diverge: BORROWED was subtracted, LENT and
+                // INVESTMENT were ignored, and card balances were mishandled, so an
+                // import disagreed with the same transactions entered by hand.
+                fun applyToWallet(wallet: String, amount: BigDecimal, type: TransactionType) {
+                    val delta = balanceDelta(amount, type, walletIsCreditCard[wallet] == true)
+                    walletBalances[wallet] = (walletBalances[wallet] ?: BigDecimal.ZERO).add(delta)
                 }
 
                 importedTxnsList.forEach { txn ->
-                    val amount = txn.amount
-                    when (txn.transactionType) {
-                        TransactionType.INCOME, TransactionType.CREDIT, TransactionType.BORROWED -> {
-                            txn.bankName?.let { bank -> applyToWallet(bank, amount) }
-                        }
-                        TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT -> {
-                            txn.bankName?.let { bank -> applyToWallet(bank, amount.negate()) }
-                        }
-                        TransactionType.TRANSFER -> {
-                            txn.fromAccount?.let { from -> applyToWallet(from, amount.negate()) }
-                            txn.toAccount?.let { to -> applyToWallet(to, amount) }
-                        }
-                        else -> {}
+                    if (txn.transactionType == TransactionType.TRANSFER) {
+                        // Written as an EXPENSE leg on the source and an INCOME leg
+                        // on the target, the same as a transfer entered by hand.
+                        txn.fromAccount?.let { applyToWallet(it, txn.amount, TransactionType.EXPENSE) }
+                        txn.toAccount?.let { applyToWallet(it, txn.amount, TransactionType.INCOME) }
+                    } else {
+                        txn.bankName?.let { applyToWallet(it, txn.amount, txn.transactionType) }
                     }
                 }
 
