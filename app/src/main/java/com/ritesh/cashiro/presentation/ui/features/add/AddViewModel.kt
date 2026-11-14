@@ -5,6 +5,7 @@ import com.ritesh.cashiro.utils.SubscriptionUtils
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
@@ -162,8 +163,22 @@ constructor(
                         return@let
                     }
                 }
-                // No main account (e.g. cashew import with multiple accounts):
-                // fall back to the effective base currency.
+                // No main account. Start from a bank account anyway: with no
+                // account picked, a transaction was saved without moving any
+                // balance, which looked like adding it did nothing.
+                val defaultAccount = availableAccounts.firstOrNull { !it.isCreditCard && !it.isWallet }
+                    ?: availableAccounts.firstOrNull()
+                if (defaultAccount != null) {
+                    _transactionUiState.update {
+                        if (it.selectedAccount == null) {
+                            it.copy(selectedAccount = defaultAccount, currency = defaultAccount.currency)
+                        } else {
+                            it
+                        }
+                    }
+                    _subscriptionUiState.update { it.copy(currency = effectiveCurrency) }
+                    return@let
+                }
                 _transactionUiState.update { it.copy(currency = effectiveCurrency) }
                 _subscriptionUiState.update { it.copy(currency = effectiveCurrency) }
             }
@@ -255,14 +270,14 @@ constructor(
         val currentTime = _transactionUiState.value.date.toLocalTime()
         val newDateTime = LocalDateTime.of(localDate, currentTime)
 
-        _transactionUiState.update { currentState -> currentState.copy(date = newDateTime) }
+        _transactionUiState.update { currentState -> currentState.copy(date = newDateTime, dateEdited = true) }
     }
 
     fun updateTransactionTime(hour: Int, minute: Int) {
         val currentDate = _transactionUiState.value.date.toLocalDate()
         val newDateTime = currentDate.atTime(hour, minute)
 
-        _transactionUiState.update { currentState -> currentState.copy(date = newDateTime) }
+        _transactionUiState.update { currentState -> currentState.copy(date = newDateTime, dateEdited = true) }
     }
 
     fun updateTransactionNotes(notes: String) {
@@ -290,6 +305,7 @@ constructor(
                         error = context.getString(R.string.err_source_target_required)
                     )
                 }
+                Toast.makeText(context, R.string.err_source_target_required, Toast.LENGTH_SHORT).show()
                 return
             }
             
@@ -299,6 +315,7 @@ constructor(
                         error = context.getString(R.string.err_accounts_different)
                     )
                 }
+                Toast.makeText(context, R.string.err_accounts_different, Toast.LENGTH_SHORT).show()
                 return
             }
         }
@@ -314,6 +331,21 @@ constructor(
             return
         }
 
+        // Saved without an account, a transaction moves no balance at all: it is
+        // listed, but every account stays where it was.
+        if (!isLoanType && state.selectedAccount == null && accounts.value.isNotEmpty()) {
+            val message = context.getString(R.string.select_account)
+            _transactionUiState.update { it.copy(error = message) }
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Left at its default, the date is when the screen was opened. Stamp the
+        // moment of saving instead, so a bank alert that arrived while the screen
+        // was open is not dated after this transaction and does not hide it from
+        // the current balance.
+        val transactionDate = if (state.dateEdited) state.date else LocalDateTime.now()
+
         viewModelScope.launch {
             try {
                 _transactionUiState.update { it.copy(isLoading = true) }
@@ -326,7 +358,7 @@ constructor(
                     category = state.category,
                     subcategory = state.subcategory,
                     type = state.transactionType,
-                    date = state.date,
+                    date = transactionDate,
                     notes = state.notes.takeIf { it.isNotBlank() },
                     isRecurring = state.isRecurring,
                     bankName = state.selectedAccount?.bankName,
@@ -354,7 +386,7 @@ constructor(
                         title = loanTitle,
                         merchant = loanTitle,
                         category = state.category,
-                        date = state.date,
+                        date = transactionDate,
                         dueDate = state.dueDate,
                         accountId = state.selectedAccount?.id
                     )
@@ -362,12 +394,14 @@ constructor(
 
                 onSuccess()
             } catch (e: Exception) {
+                val message = e.message ?: context.getString(R.string.err_save_transaction)
                 _transactionUiState.update { currentState ->
                     currentState.copy(
                         isLoading = false,
-                        error = e.message ?: context.getString(R.string.err_save_transaction)
+                        error = message
                     )
                 }
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -756,6 +790,8 @@ data class TransactionUiState(
     val subcategory: String? = null,
     val categoryError: String? = null,
     val date: LocalDateTime = LocalDateTime.now(),
+    /** Whether the user picked the date or time, rather than leaving the default. */
+    val dateEdited: Boolean = false,
     val notes: String = "",
     val isRecurring: Boolean = false,
     val selectedAccount: AccountBalanceEntity? = null,

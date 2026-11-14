@@ -19,7 +19,14 @@ data class ParsedTransaction(
     val isFromCard: Boolean = false,
     val currency: String = "INR",
     val fromAccount: String? = null,
-    val toAccount: String? = null
+    val toAccount: String? = null,
+    /**
+     * The last four digits of the card used, when the alert names it apart from
+     * the account. Some banks state both ("Account XXXX0002 / Card XXXX1234");
+     * [accountLast4] is then the account the money moved on and this is the card
+     * that moved it.
+     */
+    val cardLast4: String? = null
 ) {
     fun generateTransactionId(): String {
         val normalizedAmount = amount.setScale(2, java.math.RoundingMode.HALF_UP)

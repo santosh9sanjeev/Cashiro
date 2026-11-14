@@ -210,24 +210,15 @@ class SmsTransactionProcessor @Inject constructor(
                 val booked = balanceUpdateProcessor.process(parsedTransaction, finalEntityForInsert, rowId)
 
                 // A linked card's alert is booked to the account the card is linked
-                // to. File the transaction there as well, so it is listed and counted
-                // under that account and not under the card's own number.
-                if (booked != null &&
-                    (booked.bankName != finalEntityForInsert.bankName ||
-                        booked.accountLast4 != finalEntityForInsert.accountNumber)
-                ) {
-                    transactionRepository.updateTransaction(
-                        finalEntityForInsert.copy(
-                            id = rowId,
-                            bankName = booked.bankName,
-                            accountNumber = booked.accountLast4,
-                            fromAccount = if (finalEntityForInsert.fromAccount == finalEntityForInsert.accountNumber) {
-                                booked.accountLast4
-                            } else {
-                                finalEntityForInsert.fromAccount
-                            }
-                        )
-                    )
+                // to, and a payment to one of the user's own cards is a transfer to
+                // that card. File the transaction the way it was booked, so it is
+                // listed and counted where the money actually moved.
+                if (booked != null) {
+                    val saved = finalEntityForInsert.copy(id = rowId)
+                    val refiled = refileAsBooked(saved, booked)
+                    if (refiled != saved) {
+                        transactionRepository.updateTransaction(refiled)
+                    }
                 }
 
                 return ProcessingResult(true, transactionId = rowId)
@@ -241,4 +232,31 @@ class SmsTransactionProcessor @Inject constructor(
         }
     }
 
+}
+
+/**
+ * [saved] as it was booked: under the account its money moved on and, for a
+ * payment that turned out to be a transfer between the user's own accounts, as
+ * that transfer with its destination. Edits and deletes read these fields to
+ * find the accounts to change, so they have to match the balance rows.
+ */
+internal fun refileAsBooked(
+    saved: TransactionEntity,
+    booked: BalanceUpdateProcessor.BookedAccount
+): TransactionEntity {
+    val accountNumber = booked.accountLast4 ?: saved.accountNumber
+    val type = booked.transactionType ?: saved.transactionType
+    val fromAccount = when {
+        type == com.ritesh.cashiro.data.database.entity.TransactionType.TRANSFER &&
+            booked.accountLast4 != null -> booked.accountLast4
+        saved.fromAccount == saved.accountNumber -> accountNumber
+        else -> saved.fromAccount
+    }
+    return saved.copy(
+        bankName = booked.bankName,
+        accountNumber = accountNumber,
+        fromAccount = fromAccount,
+        toAccount = booked.toAccount ?: saved.toAccount,
+        transactionType = type
+    )
 }

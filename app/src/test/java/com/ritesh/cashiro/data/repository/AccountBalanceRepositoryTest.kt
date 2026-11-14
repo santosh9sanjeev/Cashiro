@@ -407,11 +407,41 @@ class AccountBalanceRepositoryTest {
         assertNotNull(balanceT2)
         assertEquals(BigDecimal("700"), balanceT2.balance)
 
-        // MANUAL entries are not authoritative hard stops: the cascade continues
-        // through them and the manual row is updated to carry the running balance.
+        // The manual row set the account to 2000 from 1000: a correction by the
+        // user. It already accounts for everything before it, so it stays as the
+        // user typed it instead of being overwritten with the running balance.
         val balanceT3 = dao.balances.find { it.timestamp == t3 }
         assertNotNull(balanceT3)
-        assertEquals(BigDecimal("700"), balanceT3.balance)
+        assertEquals(BigDecimal("2000"), balanceT3.balance)
+    }
+
+    @Test
+    fun manualRowWithoutChangeOfItsOwnCarriesBackdatedTransactions() = runTest {
+        val dao = FakeAccountBalanceDao()
+        val repository = AccountBalanceRepository(dao, ContextWrapper(null))
+
+        val t1 = LocalDateTime.of(2025, 1, 1, 10, 0)
+        dao.seedBalance(AccountBalanceEntity(bankName = "Test Bank", accountLast4 = "1234", balance = BigDecimal("1000"), timestamp = t1, sourceType = "CALCULATED"))
+        // An edit of the account's name or icon re-records the same balance.
+        val t3 = LocalDateTime.of(2025, 1, 3, 10, 0)
+        dao.seedBalance(AccountBalanceEntity(bankName = "Test Bank", accountLast4 = "1234", balance = BigDecimal("1000"), timestamp = t3, sourceType = "MANUAL"))
+
+        val t2 = LocalDateTime.of(2025, 1, 2, 10, 0)
+        repository.insertTransactionBalance(
+            bankName = "Test Bank",
+            accountLast4 = "1234",
+            amount = BigDecimal("300"),
+            transactionType = TransactionType.EXPENSE,
+            explicitBalance = null,
+            smsSource = null,
+            currency = "INR",
+            timestamp = t2,
+            transactionId = 200L,
+            creditLimit = null,
+            isCreditCard = false
+        )
+
+        assertEquals(BigDecimal("700"), dao.balances.find { it.timestamp == t3 }?.balance)
     }
 
     @Test

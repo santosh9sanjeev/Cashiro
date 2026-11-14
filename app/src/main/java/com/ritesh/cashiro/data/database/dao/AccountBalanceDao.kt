@@ -221,12 +221,22 @@ abstract class AccountBalanceDao {
             val balanceBeforeRow = previousOld
             previousOld = originalBalance
 
-            // MANUAL entries (user-created account setup) are NOT hard stops.
-            // When a backdated transaction is added before a MANUAL entry, the cascade
-            // must continue past it so that subsequent TRANSACTION_CALCULATED entries
-            // (e.g., today's expenses) are correctly updated to reflect the backdated change.
-            // The MANUAL entry itself is updated to carry the accumulated delta.
             if (sourceType == SOURCE_MANUAL) {
+                // A balance the user typed in that differs from what the account
+                // held just before it is a correction: the user stating what the
+                // account really holds at that moment. It already accounts for
+                // everything before it, so it stops the pass like a bank-reported
+                // balance. Carrying the running balance into it instead silently
+                // threw the user's figure away the next time anything earlier was
+                // added, edited or deleted.
+                val isCorrection = balanceBeforeRow != null &&
+                    originalBalance.compareTo(balanceBeforeRow) != 0
+                if (isCorrection) {
+                    break
+                }
+                // Otherwise it records no change of its own (an account's first
+                // row, or an edit of its name or icon), so a backdated transaction
+                // carries through it to the rows after it.
                 if (runningBalance != row.balance) {
                     updateAndInvalidate(row.id, runningBalance)
                 }

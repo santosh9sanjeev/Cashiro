@@ -14,6 +14,11 @@ class ADCBParser : FABParser() {
 
     override fun getCurrency() = "AED"  // UAE Dirham (default)
 
+    // ADCB words its alerts differently from FAB, so FAB's card, available-credit
+    // and payment-recipient handling does not apply.
+    override val fabAlertLayout: Boolean
+        get() = false
+
     override fun canHandle(sender: String): Boolean {
         val upperSender = sender.uppercase()
         return upperSender == "ADCBALERT" ||

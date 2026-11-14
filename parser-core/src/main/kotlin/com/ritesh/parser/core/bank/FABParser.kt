@@ -34,18 +34,39 @@ open class FABParser : BankParser() {
         // Extract currency from message or use default AED
         val currency = extractCurrency(smsBody) ?: "AED"
 
-        // Extract available limit for credit card transactions
-        val availableLimit = if (type == TransactionType.CREDIT) {
-            val limit = extractAvailableLimit(smsBody)
-            limit
+        val isCreditCardPurchase = type == TransactionType.CREDIT
+        val reportedBalance = extractBalance(smsBody)
+
+        // FAB card alerts name both the account and the card ("Account XXXX0002",
+        // "Card XXXX1234"). Only the account used to be kept, so a credit card
+        // purchase was booked to the bank account instead of the card.
+        val cardLast4 = if (fabAlertLayout) extractCardLast4(smsBody) else null
+
+        // On a credit card alert, "Available Balance" is the credit still available
+        // on the card, not money held anywhere. Recording it as the balance set the
+        // card's outstanding amount - or the bank account's balance - to that figure.
+        val balance = if (fabAlertLayout && isCreditCardPurchase) null else reportedBalance
+        val availableLimit = if (isCreditCardPurchase) {
+            extractAvailableLimit(smsBody) ?: reportedBalance.takeIf { fabAlertLayout }
         } else {
             null
+        }
+
+        // A credit card purchase is owed on the card. Anything else moves the
+        // account the alert names; an alert naming only a card books to the card.
+        val accountLast4 = if (isCreditCardPurchase && cardLast4 != null) {
+            cardLast4
+        } else {
+            extractAccountLast4(smsBody) ?: cardLast4
         }
 
         val (fromAccount, toAccount) = if (type == TransactionType.TRANSFER) {
             extractTransferAccounts(smsBody)
         } else {
-            Pair(null, null)
+            // "Your payment instructions of AED 100.00 to ***1234": the recipient,
+            // which may be one of the user's own cards. Without it a card payment
+            // could only ever be an expense that moved no account at all.
+            Pair(null, if (fabAlertLayout) extractPaymentRecipientLast4(smsBody) else null)
         }
 
         return ParsedTransaction(
@@ -53,9 +74,9 @@ open class FABParser : BankParser() {
             type = type,
             merchant = extractMerchant(smsBody, sender),
             reference = extractReference(smsBody),
-            accountLast4 = extractAccountLast4(smsBody),
-            balance = extractBalance(smsBody),
-            creditLimit = availableLimit,  // TODO: This is actually available limit, will be fixed in SmsReaderWorker
+            accountLast4 = accountLast4,
+            balance = balance,
+            creditLimit = availableLimit,  // The available limit; the app derives the total from it
             smsBody = smsBody,
             sender = sender,
             timestamp = timestamp,
@@ -63,8 +84,39 @@ open class FABParser : BankParser() {
             isFromCard = containsCardPurchase(smsBody),
             currency = currency,
             fromAccount = fromAccount,
-            toAccount = toAccount
+            toAccount = toAccount,
+            cardLast4 = cardLast4
         )
+    }
+
+    /**
+     * Whether alerts follow FAB's own layout: account and card named on separate
+     * lines, "Available Balance" meaning available credit on a credit card alert,
+     * and payment instructions naming the recipient. Banks that reuse this parser
+     * with differently worded alerts turn it off and keep their behaviour.
+     */
+    protected open val fabAlertLayout: Boolean
+        get() = true
+
+    /** The last four digits of the card in "Card XXXX1234" or "Card No XXXX1234". */
+    protected open fun extractCardLast4(message: String): String? {
+        val cardPattern = Regex(
+            """\bCard\s+(?:No\.?\s*)?[X*\d]*?(\d{4})\b""",
+            RegexOption.IGNORE_CASE
+        )
+        return cardPattern.find(message)?.groupValues?.get(1)
+    }
+
+    /**
+     * The last four digits of whoever a payment instruction paid, when the bank
+     * shows them ("to ***1234"). A recipient masked down to fewer digits
+     * ("to 5xxx**1xxx") cannot be matched to an account, so it gives nothing.
+     */
+    protected open fun extractPaymentRecipientLast4(message: String): String? {
+        if (!message.contains("payment instructions", ignoreCase = true)) return null
+        val recipient = Regex("""\bto\s+([X*\d]+)""", RegexOption.IGNORE_CASE)
+            .find(message)?.groupValues?.get(1) ?: return null
+        return Regex("""(\d{4})$""").find(recipient)?.groupValues?.get(1)
     }
 
     override fun canHandle(sender: String): Boolean {

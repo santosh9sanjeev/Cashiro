@@ -81,6 +81,13 @@ jobs:
           --tests "com.ritesh.cashiro.data.repository.AccountAttributionTest"
           --tests "com.ritesh.cashiro.data.repository.TransactionDeleteTest"
           --tests "com.ritesh.cashiro.data.repository.DisplayCurrencyAndCardLinkTest"
+          --tests "com.ritesh.cashiro.data.manager.FabAlertBookingTest"
+
+      # The FAB parser's own tests. Non-blocking because the parser module's
+      # tests were never compiled in CI before; failures are still annotated.
+      - name: Run FAB parser tests
+        continue-on-error: true
+        run: ./gradlew :parser-core:test --stacktrace --tests "com.ritesh.parser.core.bank.FABAlertLayoutTest"
 
       # Non-blocking: the rest of the suite was never run in CI before, so any
       # failure here is pre-existing and should not withhold the APK.
@@ -105,7 +112,7 @@ jobs:
               return esc_data(s).replace(':', '%3A').replace(',', '%2C')
 
           count = 0
-          for path in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+          for path in glob.glob('*/build/test-results/**/*.xml', recursive=True):
               for case in ET.parse(path).getroot().iter('testcase'):
                   for kind in ('failure', 'error'):
                       node = case.find(kind)

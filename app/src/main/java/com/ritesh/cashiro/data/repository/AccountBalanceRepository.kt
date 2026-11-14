@@ -70,7 +70,22 @@ class AccountBalanceRepository @Inject constructor(
             } else {
                 entity
             }
-        return resolveBankByLast4(withAccount, parsedTransaction.isFromCard)
+        return resolveBankByLast4(withAccount, namesCreditCard(parsedTransaction))
+    }
+
+    /**
+     * Whether the number an alert is filed under is a credit card's.
+     *
+     * A card alert usually names only the card, so its number is the card's. Some
+     * banks also name the account a debit card drew on ("Account XXXX0002 / Card
+     * XXXX1234"); the alert is then filed under that bank account, and treating it
+     * as a card's number kept it from ever matching the user's account.
+     */
+    private fun namesCreditCard(parsed: ParsedTransaction): Boolean {
+        if (parsed.type == com.ritesh.parser.core.TransactionType.CREDIT) return true
+        if (!parsed.isFromCard) return false
+        val card = parsed.cardLast4 ?: return true
+        return card == parsed.accountLast4
     }
 
     /**
@@ -88,7 +103,7 @@ class AccountBalanceRepository @Inject constructor(
      */
     private suspend fun resolveBankByLast4(
         entity: TransactionEntity,
-        isFromCard: Boolean
+        isCreditCardNumber: Boolean
     ): TransactionEntity {
         val bankName = entity.bankName ?: return entity
         val last4 = entity.accountNumber ?: return entity
@@ -97,7 +112,7 @@ class AccountBalanceRepository @Inject constructor(
 
         val candidates = accountBalanceDao.getAllLatestBalances().first()
             .filter { it.accountLast4 == last4 && it.bankName != bankName }
-            .filter { it.isCreditCard == isFromCard }
+            .filter { it.isCreditCard == isCreditCardNumber }
             .distinctBy { it.bankName }
         return if (candidates.size == 1) entity.copy(bankName = candidates.single().bankName) else entity
     }

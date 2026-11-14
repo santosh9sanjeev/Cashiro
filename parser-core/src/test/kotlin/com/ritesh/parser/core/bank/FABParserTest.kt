@@ -39,8 +39,9 @@ class FABParserTest {
                     currency = "AED",
                     type = TransactionType.CREDIT,
                     merchant = "TR              DUBAI           ARE",
-                    accountLast4 = "0002",
-                    balance = BigDecimal("4530.16"),
+                    // Owed on the card; "Available Balance" is its available credit.
+                    accountLast4 = "1234",
+                    creditLimit = BigDecimal("4530.16"),
                     isFromCard = true
                 )
             ),
