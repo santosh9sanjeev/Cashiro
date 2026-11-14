@@ -12,6 +12,7 @@ import com.ritesh.cashiro.data.database.entity.TransactionType
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.SubscriptionRepository
 import com.ritesh.cashiro.data.repository.TransactionRepository
+import com.ritesh.cashiro.testing.FakeAccountBalanceDao
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDateTime
@@ -506,115 +507,5 @@ class AddTransactionUseCaseTest {
         override suspend fun getSubscriptionsByStateList(state: com.ritesh.cashiro.data.database.entity.SubscriptionState): List<com.ritesh.cashiro.data.database.entity.SubscriptionEntity> = emptyList()
         override suspend fun deleteSampleSubscriptions() = Unit
         override suspend fun deleteAllSubscriptions() = Unit
-    }
-
-    private class FakeAccountBalanceDao : AccountBalanceDao() {
-        private val balances = mutableMapOf<Pair<String, String>, MutableList<AccountBalanceEntity>>()
-        private var nextId = 1L
-
-        fun seedBalance(entity: AccountBalanceEntity) {
-            val key = Pair(entity.bankName, entity.accountLast4)
-            balances.getOrPut(key) { mutableListOf() }.add(
-                entity.copy(id = nextId++)
-            )
-        }
-
-        override suspend fun insertBalance(balance: AccountBalanceEntity): Long {
-            val key = Pair(balance.bankName, balance.accountLast4)
-            val id = nextId++
-            balances.getOrPut(key) { mutableListOf() }.add(balance.copy(id = id))
-            return id
-        }
-
-        override suspend fun getLatestBalance(bankName: String, accountLast4: String): AccountBalanceEntity? {
-            val key = Pair(bankName, accountLast4)
-            return balances[key]?.maxByOrNull { it.timestamp }
-        }
-
-        override suspend fun getAccountLast4sEndingWith(bankName: String, suffix: String): List<String> = emptyList()
-        override suspend fun getLatestBalanceOnOrBefore(
-            bankName: String,
-            accountLast4: String,
-            timestamp: LocalDateTime
-        ): AccountBalanceEntity? {
-            val key = Pair(bankName, accountLast4)
-            return balances[key]
-                ?.filter { !it.timestamp.isAfter(timestamp) }
-                ?.maxByOrNull { it.timestamp }
-        }
-        override suspend fun getBalancesAfterWithTransactions(
-            bankName: String,
-            accountLast4: String,
-            timestamp: LocalDateTime
-        ): List<AccountBalanceTransactionInfo> = emptyList()
-        override fun getLatestBalanceFlow(bankName: String, accountLast4: String): Flow<AccountBalanceEntity?> = flowOf(null)
-        override fun getAllLatestBalances(): Flow<List<AccountBalanceEntity>> = flowOf(emptyList())
-        override fun getAllBalances(): Flow<List<AccountBalanceEntity>> = flowOf(emptyList())
-        override suspend fun deleteAllBalances() = Unit
-        override suspend fun deleteSampleBalances() = Unit
-        override fun getCurrentMonthLatestBalances(): Flow<List<AccountBalanceEntity>> = flowOf(emptyList())
-        override fun getTotalBalance(): Flow<BigDecimal?> = flowOf(BigDecimal.ZERO)
-        override fun getBalanceHistory(bankName: String, accountLast4: String, startDate: LocalDateTime, endDate: LocalDateTime): Flow<List<AccountBalanceEntity>> = flowOf(emptyList())
-        override fun getAccountCount(): Flow<Int> = flowOf(0)
-        override suspend fun deleteOldBalances(beforeDate: LocalDateTime): Int = 0
-        override suspend fun updateBalance(balance: AccountBalanceEntity) {
-            for (list in balances.values) {
-                val index = list.indexOfFirst { it.id == balance.id }
-                if (index != -1) {
-                    list[index] = balance
-                    break
-                }
-            }
-        }
-        override suspend fun deleteBalance(balance: AccountBalanceEntity) = Unit
-        override suspend fun getBalanceHistoryForAccount(bankName: String, accountLast4: String): List<AccountBalanceEntity> = emptyList()
-        override suspend fun deleteBalanceById(id: Long) = Unit
-        override suspend fun updateBalanceById(id: Long, newBalance: BigDecimal) {
-            for (list in balances.values) {
-                val index = list.indexOfFirst { it.id == id }
-                if (index != -1) {
-                    list[index] = list[index].copy(balance = newBalance)
-                    break
-                }
-            }
-        }
-        override suspend fun getBalanceCountForAccount(bankName: String, accountLast4: String): Int = balances[Pair(bankName, accountLast4)]?.size ?: 0
-        override suspend fun deleteAccount(bankName: String, accountLast4: String): Int {
-            val key = Pair(bankName, accountLast4)
-            val size = balances[key]?.size ?: 0
-            balances.remove(key)
-            return size
-        }
-        override suspend fun updateAccountBankName(oldBankName: String, accountLast4: String, newBankName: String): Int = 0
-
-        override suspend fun updateAccountLast4(bankName: String, oldAccountLast4: String, newAccountLast4: String): Int = 0
-
-        override suspend fun setAccountCreditCardFlag(bankName: String, accountLast4: String, isCreditCard: Boolean): Int = 0
-        override suspend fun getBalanceByTransactionId(transactionId: Long): AccountBalanceEntity? {
-            for (list in balances.values) {
-                list.find { it.transactionId == transactionId }?.let { return it }
-            }
-            return null
-        }
-
-        override suspend fun getBalanceById(id: Long): AccountBalanceEntity? {
-            for (list in balances.values) {
-                list.find { it.id == id }?.let { return it }
-            }
-            return null
-        }
-
-        override suspend fun recalculateBalancesAfter(
-            bankName: String,
-            accountLast4: String,
-            timestamp: LocalDateTime,
-            startingBalance: BigDecimal
-        ) = Unit
-
-        override suspend fun getAccountByLast4(accountLast4: String): AccountBalanceEntity? = null
-
-        override suspend fun getEarliestBalance(bankName: String, accountLast4: String): AccountBalanceEntity? {
-            return balances[Pair(bankName, accountLast4)]?.minByOrNull { it.timestamp }
-        }
     }
 }
