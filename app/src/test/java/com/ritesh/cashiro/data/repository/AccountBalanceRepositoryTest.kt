@@ -609,6 +609,38 @@ class AccountBalanceRepositoryTest {
             newBankName: String
         ): Int = 0
 
+        override suspend fun updateAccountLast4(
+            bankName: String,
+            oldAccountLast4: String,
+            newAccountLast4: String
+        ): Int {
+            var changed = 0
+            for (i in balances.indices) {
+                val row = balances[i]
+                if (row.bankName == bankName && row.accountLast4 == oldAccountLast4) {
+                    balances[i] = row.copy(accountLast4 = newAccountLast4)
+                    changed++
+                }
+            }
+            return changed
+        }
+
+        override suspend fun setAccountCreditCardFlag(
+            bankName: String,
+            accountLast4: String,
+            isCreditCard: Boolean
+        ): Int {
+            var changed = 0
+            for (i in balances.indices) {
+                val row = balances[i]
+                if (row.bankName == bankName && row.accountLast4 == accountLast4) {
+                    balances[i] = row.copy(isCreditCard = isCreditCard)
+                    changed++
+                }
+            }
+            return changed
+        }
+
         override suspend fun getAccountByLast4(accountLast4: String): AccountBalanceEntity? = null
 
         override suspend fun getEarliestBalance(bankName: String, accountLast4: String): AccountBalanceEntity? {

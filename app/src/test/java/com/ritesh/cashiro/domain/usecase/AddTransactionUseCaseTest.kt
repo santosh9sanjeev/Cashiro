@@ -586,6 +586,10 @@ class AddTransactionUseCaseTest {
             return size
         }
         override suspend fun updateAccountBankName(oldBankName: String, accountLast4: String, newBankName: String): Int = 0
+
+        override suspend fun updateAccountLast4(bankName: String, oldAccountLast4: String, newAccountLast4: String): Int = 0
+
+        override suspend fun setAccountCreditCardFlag(bankName: String, accountLast4: String, isCreditCard: Boolean): Int = 0
         override suspend fun getBalanceByTransactionId(transactionId: Long): AccountBalanceEntity? {
             for (list in balances.values) {
                 list.find { it.transactionId == transactionId }?.let { return it }
