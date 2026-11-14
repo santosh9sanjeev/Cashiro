@@ -648,30 +648,37 @@ class CashewImporter @Inject constructor(
 
                 // 7. Compute net balances per wallet and insert snapshot row
                 val walletBalances = mutableMapOf<String, BigDecimal>()
+                val walletIsCreditCard = mutableMapOf<String, Boolean>()
                 walletsList.forEach { wallet ->
                     walletBalances[wallet.bankName] = BigDecimal.ZERO
+                    walletIsCreditCard[wallet.bankName] = wallet.isCreditCard
+                }
+
+                // Mirrors calculateTransactionBalance. The rules used to diverge
+                // here: BORROWED was subtracted rather than added, LENT and
+                // INVESTMENT were ignored entirely, and credit cards were treated
+                // as bank accounts, so an imported file produced balances that
+                // disagreed with the same transactions entered by hand.
+                fun applyToWallet(wallet: String, signedAmount: BigDecimal) {
+                    val mirrored =
+                        if (walletIsCreditCard[wallet] == true) signedAmount.negate()
+                        else signedAmount
+                    walletBalances[wallet] =
+                        (walletBalances[wallet] ?: BigDecimal.ZERO).add(mirrored)
                 }
 
                 importedTxnsList.forEach { txn ->
                     val amount = txn.amount
                     when (txn.transactionType) {
-                        TransactionType.INCOME, TransactionType.CREDIT -> {
-                            txn.bankName?.let { bank ->
-                                walletBalances[bank] = (walletBalances[bank] ?: BigDecimal.ZERO).add(amount)
-                            }
+                        TransactionType.INCOME, TransactionType.CREDIT, TransactionType.BORROWED -> {
+                            txn.bankName?.let { bank -> applyToWallet(bank, amount) }
                         }
-                        TransactionType.EXPENSE, TransactionType.BORROWED -> {
-                            txn.bankName?.let { bank ->
-                                walletBalances[bank] = (walletBalances[bank] ?: BigDecimal.ZERO).subtract(amount)
-                            }
+                        TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT -> {
+                            txn.bankName?.let { bank -> applyToWallet(bank, amount.negate()) }
                         }
                         TransactionType.TRANSFER -> {
-                            txn.fromAccount?.let { from ->
-                                walletBalances[from] = (walletBalances[from] ?: BigDecimal.ZERO).subtract(amount)
-                            }
-                            txn.toAccount?.let { to ->
-                                walletBalances[to] = (walletBalances[to] ?: BigDecimal.ZERO).add(amount)
-                            }
+                            txn.fromAccount?.let { from -> applyToWallet(from, amount.negate()) }
+                            txn.toAccount?.let { to -> applyToWallet(to, amount) }
                         }
                         else -> {}
                     }

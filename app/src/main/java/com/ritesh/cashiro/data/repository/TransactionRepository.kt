@@ -1,5 +1,6 @@
 package com.ritesh.cashiro.data.repository
 
+import android.util.Log
 import com.ritesh.cashiro.data.currency.CurrencyConversionService
 import com.ritesh.cashiro.data.database.dao.TransactionDao
 import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
@@ -207,7 +208,11 @@ class TransactionRepository @Inject constructor(
             if (bankName != null && accountLast4 != null) {
                 adjustBalance(bankName, accountLast4, transaction.amount.negate(), reverse, sourceType, transaction.currency)
             }
-            val target = transaction.toAccount?.let { findAccountByLast4(it) }
+            // Exclude the source so a transfer can never resolve back onto the
+            // account it left, which would cancel itself out.
+            val target = transaction.toAccount?.let {
+                findAccountByLast4(it, excludeBank = bankName, excludeLast4 = accountLast4)
+            }
             if (target != null) {
                 adjustBalance(target.bankName, target.accountLast4, transaction.amount, reverse, sourceType, transaction.currency)
             }
@@ -270,9 +275,30 @@ class TransactionRepository @Inject constructor(
         )
     }
 
-    private suspend fun findAccountByLast4(last4: String): AccountBalanceEntity? =
-        accountBalanceRepository.getAllLatestBalances().first()
-            .find { it.accountLast4 == last4 }
+    /**
+     * Resolves a transfer's destination from the last four digits.
+     *
+     * Transactions only store the destination's last four digits, with no bank,
+     * so two accounts ending in the same digits are genuinely ambiguous. The
+     * source account is excluded so a transfer never lands back on itself, and
+     * a remaining ambiguity is logged rather than silently resolved.
+     */
+    private suspend fun findAccountByLast4(
+        last4: String,
+        excludeBank: String? = null,
+        excludeLast4: String? = null
+    ): AccountBalanceEntity? {
+        val candidates = accountBalanceRepository.getAllLatestBalances().first()
+            .filter { it.accountLast4 == last4 }
+            .filterNot { it.bankName == excludeBank && it.accountLast4 == excludeLast4 }
+        if (candidates.size > 1) {
+            Log.w(
+                "TransactionRepository",
+                "Ambiguous transfer target: ${candidates.size} accounts end in $last4"
+            )
+        }
+        return candidates.firstOrNull()
+    }
 
     private suspend fun applyBalanceForTransaction(transaction: TransactionEntity) {
         applyTransactionToBalances(transaction, reverse = false, sourceType = "UNDO_REVERSAL")

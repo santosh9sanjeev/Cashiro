@@ -6,10 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.ritesh.cashiro.data.database.CashiroDatabase
-import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
-import com.ritesh.cashiro.data.database.entity.TransactionType
-import java.math.BigDecimal
-import java.time.LocalDateTime
+import com.ritesh.cashiro.data.repository.TransactionRepository
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,6 +21,16 @@ import kotlinx.coroutines.launch
  * Supports updating merchant, category, confirming, and deleting transactions.
  */
 class NotificationActionReceiver : BroadcastReceiver() {
+
+    /**
+     * A BroadcastReceiver cannot take constructor injection, so reach the
+     * repository through Hilt rather than reimplementing its logic on raw DAOs.
+     */
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface NotificationActionEntryPoint {
+        fun transactionRepository(): TransactionRepository
+    }
 
     companion object {
         private const val TAG = "NotificationActionReceiver"
@@ -67,69 +78,17 @@ class NotificationActionReceiver : BroadcastReceiver() {
     private fun deleteTransaction(context: Context, transactionId: Long, notificationId: Int) {
         receiverScope.launch {
             try {
-                val database = CashiroDatabase.getInstance(context)
-                val transactionDao = database.transactionDao()
-
-                // Fetch transaction before deleting to get account info for balance reversal
-                val transaction = transactionDao.getTransactionById(transactionId)
-                if (transaction == null) {
-                    Log.e(TAG, "Transaction not found: $transactionId")
-                    dismissNotification(context, notificationId)
-                    return@launch
-                }
-
-                // Soft delete the transaction
-                transactionDao.softDeleteTransaction(transactionId)
+                // Delegate to the repository rather than reversing the balance by
+                // hand. The arithmetic lives in one place, so credit cards, both
+                // legs of a transfer and currency conversion are all handled the
+                // same way here as everywhere else in the app.
+                val entryPoint = EntryPointAccessors.fromApplication(
+                    context.applicationContext,
+                    NotificationActionEntryPoint::class.java
+                )
+                entryPoint.transactionRepository().deleteTransactionById(transactionId)
                 Log.d(TAG, "Deleted transaction: $transactionId")
 
-                // Reverse account balance if transaction has account info
-                val bankName = transaction.bankName
-                val accountLast4 = transaction.accountNumber
-                if (bankName != null && accountLast4 != null) {
-                    val balanceDao = database.accountBalanceDao()
-                    val latestBalance = balanceDao.getLatestBalance(bankName, accountLast4)
-                    if (latestBalance != null) {
-                        val currentBalance = latestBalance.balance
-                        val isCreditCard = latestBalance.isCreditCard
-
-                         val reversedBalance = when {
-                             isCreditCard -> {
-                                 when (transaction.transactionType) {
-                                     TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT, TransactionType.BORROWED -> currentBalance - transaction.amount
-                                     TransactionType.INCOME -> currentBalance + transaction.amount
-                                     else -> currentBalance
-                                 }
-                             }
-                             else -> {
-                                 when (transaction.transactionType) {
-                                     TransactionType.EXPENSE, TransactionType.INVESTMENT, TransactionType.LENT -> currentBalance + transaction.amount
-                                     TransactionType.INCOME, TransactionType.BORROWED -> currentBalance - transaction.amount
-                                     else -> currentBalance
-                                 }
-                             }
-                         }
-
-                        val balanceEntity = AccountBalanceEntity(
-                            bankName = bankName,
-                            accountLast4 = accountLast4,
-                            balance = reversedBalance,
-                            timestamp = LocalDateTime.now(),
-                            transactionId = null,
-                            creditLimit = latestBalance.creditLimit,
-                            isCreditCard = isCreditCard,
-                            iconResId = latestBalance.iconResId,
-                            iconName = latestBalance.iconName,
-                            isWallet = latestBalance.isWallet,
-                            color = latestBalance.color,
-                            currency = transaction.currency,
-                            sourceType = "DELETE_REVERSAL"
-                        )
-                        balanceDao.insertBalance(balanceEntity)
-                        Log.d(TAG, "Reversed balance for deleted transaction: $transactionId")
-                    }
-                }
-
-                // Dismiss the notification
                 dismissNotification(context, notificationId)
             } catch (e: Exception) {
                 Log.e(TAG, "Error deleting transaction", e)
