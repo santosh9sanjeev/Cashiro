@@ -14,6 +14,10 @@ jobs:
     name: Build debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Needed to publish the APK as a release, the one download a phone can
+    # open without signing in to GitHub.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -82,6 +86,24 @@ jobs:
           --tests "com.ritesh.cashiro.data.repository.TransactionDeleteTest"
           --tests "com.ritesh.cashiro.data.repository.DisplayCurrencyAndCardLinkTest"
           --tests "com.ritesh.cashiro.data.manager.FabAlertBookingTest"
+
+      # Artifacts can only be downloaded when signed in to GitHub, which a phone
+      # browser rarely is, and they arrive zipped. A release asset is a plain
+      # APK at a fixed link anyone can open. Only after the balance tests pass,
+      # so the phone link never serves a build that failed them.
+      - name: Publish APK to the latest-debug release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls artifacts/*arm64-v8a-debug.apk | head -1)
+          cp "$APK" artifacts/cashiro-debug.apk
+          gh release delete latest-debug --yes --cleanup-tag || true
+          gh release create latest-debug artifacts/cashiro-debug.apk \
+            --target "$GITHUB_SHA" \
+            --title "Latest debug build" \
+            --notes "Debug build of ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Install cashiro-debug.apk." \
+            --prerelease
 
       # The FAB parser's own tests. Non-blocking because the parser module's
       # tests were never compiled in CI before; failures are still annotated.
