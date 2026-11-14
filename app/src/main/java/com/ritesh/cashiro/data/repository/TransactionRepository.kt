@@ -1,7 +1,7 @@
 package com.ritesh.cashiro.data.repository
 
 import android.util.Log
-import com.ritesh.cashiro.data.currency.CurrencyConversionService
+import com.ritesh.cashiro.data.currency.CurrencyConverter
 import com.ritesh.cashiro.data.database.dao.TransactionDao
 import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
 import com.ritesh.cashiro.data.database.entity.TransactionEntity
@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.map
 class TransactionRepository @Inject constructor(
     private val transactionDao: TransactionDao,
     private val accountBalanceRepository: AccountBalanceRepository,
-    private val currencyConversionService: CurrencyConversionService
+    private val currencyConversionService: CurrencyConverter
 ) {
     fun getAllTransactions(): Flow<List<TransactionEntity>> = transactionDao.getAllTransactions()
         .map { list -> list.filter { it.transactionType != TransactionType.BALANCE_UPDATE } }

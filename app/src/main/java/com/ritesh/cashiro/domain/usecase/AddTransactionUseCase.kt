@@ -6,7 +6,7 @@ import com.ritesh.cashiro.data.database.entity.SubscriptionEntity
 import com.ritesh.cashiro.data.database.entity.SubscriptionState
 import com.ritesh.cashiro.data.database.entity.TransactionEntity
 import com.ritesh.cashiro.data.database.entity.TransactionType
-import com.ritesh.cashiro.data.currency.CurrencyConversionService
+import com.ritesh.cashiro.data.currency.CurrencyConverter
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.SubscriptionRepository
 import com.ritesh.cashiro.data.repository.TransactionRepository
@@ -22,7 +22,7 @@ constructor(
         private val transactionRepository: TransactionRepository,
         private val subscriptionRepository: SubscriptionRepository,
         private val accountBalanceRepository: AccountBalanceRepository,
-        private val currencyConversionService: CurrencyConversionService
+        private val currencyConversionService: CurrencyConverter
 ) {
     suspend fun execute(
             amount: BigDecimal,

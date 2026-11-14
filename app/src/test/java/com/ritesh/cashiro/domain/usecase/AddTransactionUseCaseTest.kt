@@ -1,6 +1,7 @@
 package com.ritesh.cashiro.domain.usecase
 
 import android.content.ContextWrapper
+import com.ritesh.cashiro.data.currency.CurrencyConverter
 import com.ritesh.cashiro.data.database.dao.AccountBalanceDao
 import com.ritesh.cashiro.data.database.dao.AccountBalanceTransactionInfo
 import com.ritesh.cashiro.data.database.dao.SubscriptionDao
@@ -374,13 +375,24 @@ class AddTransactionUseCaseTest {
         val accountBalanceRepo = AccountBalanceRepository(balanceDao, context)
         val dao = FakeTransactionDao()
         transactionDao = dao
-        val transactionRepo = TransactionRepository(dao, accountBalanceRepo)
+        val converter = FakeCurrencyConverter()
+        val transactionRepo = TransactionRepository(dao, accountBalanceRepo, converter)
         val subscriptionDao = FakeSubscriptionDao()
         val subscriptionRepo = SubscriptionRepository(subscriptionDao)
         return Pair(
-            AddTransactionUseCase(transactionRepo, subscriptionRepo, accountBalanceRepo),
+            AddTransactionUseCase(transactionRepo, subscriptionRepo, accountBalanceRepo, converter),
             transactionRepo
         )
+    }
+
+    /** Single-currency test data, so conversion is the identity. */
+    private class FakeCurrencyConverter : CurrencyConverter {
+        override suspend fun convertAmount(
+            amount: BigDecimal,
+            fromCurrency: String,
+            toCurrency: String,
+            forceRefresh: Boolean
+        ): BigDecimal = amount
     }
 
     private class FakeTransactionDao : TransactionDao {

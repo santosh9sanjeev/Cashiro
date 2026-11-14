@@ -7,7 +7,7 @@ import com.ritesh.cashiro.data.database.entity.CardType
 import com.ritesh.cashiro.data.database.entity.TransactionEntity
 import com.ritesh.cashiro.data.database.entity.TransactionType
 import com.ritesh.cashiro.data.mapper.toEntityType
-import com.ritesh.cashiro.data.currency.CurrencyConversionService
+import com.ritesh.cashiro.data.currency.CurrencyConverter
 import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.CardRepository
 import com.ritesh.cashiro.utils.PiiRedactor
@@ -21,7 +21,7 @@ import javax.inject.Singleton
 class BalanceUpdateProcessor @Inject constructor(
     private val cardRepository: CardRepository,
     private val accountBalanceRepository: AccountBalanceRepository,
-    private val currencyConversionService: CurrencyConversionService
+    private val currencyConversionService: CurrencyConverter
 ) {
     companion object {
         private const val TAG = "BalanceUpdateProcessor"

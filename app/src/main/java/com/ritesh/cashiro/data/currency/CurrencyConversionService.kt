@@ -24,7 +24,7 @@ class CurrencyConversionService @Inject constructor(
     private val exchangeRateDao: ExchangeRateDao,
     private val exchangeRateProvider: ExchangeRateProvider,
     private val userPreferencesRepository: UserPreferencesRepository
-) {
+) : CurrencyConverter {
     private val backgroundScope = CoroutineScope(Dispatchers.IO)
 
     // Cache rates for performance
@@ -38,11 +38,11 @@ class CurrencyConversionService @Inject constructor(
     /**
      * Convert amount from one currency to another
      */
-    suspend fun convertAmount(
+    override suspend fun convertAmount(
         amount: BigDecimal,
         fromCurrency: String,
         toCurrency: String,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean
     ): BigDecimal {
         if (fromCurrency.equals(toCurrency, ignoreCase = true)) {
             return amount
