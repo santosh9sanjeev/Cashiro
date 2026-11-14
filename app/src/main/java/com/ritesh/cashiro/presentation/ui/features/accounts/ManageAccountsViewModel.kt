@@ -701,6 +701,17 @@ constructor(
                     }
                 }
 
+                // Repair history when the account type changes. Rows written while
+                // the flag was wrong would otherwise keep being recalculated with
+                // bank-account rules, so the outstanding amount never adds up.
+                if ((latestBalance?.isCreditCard ?: false) != isCreditCard) {
+                    accountBalanceRepository.setAccountCreditCardFlag(
+                        newBankName,
+                        targetLast4,
+                        isCreditCard
+                    )
+                }
+
                 // Insert new balance record with updated values
                 accountBalanceRepository.insertBalance(
                     AccountBalanceEntity(

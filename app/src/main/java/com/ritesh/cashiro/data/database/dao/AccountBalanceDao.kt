@@ -395,6 +395,18 @@ abstract class AccountBalanceDao {
 
     @Query("UPDATE account_balances SET account_last4 = :newAccountLast4 WHERE bank_name = :bankName AND account_last4 = :oldAccountLast4")
     abstract suspend fun updateAccountLast4(bankName: String, oldAccountLast4: String, newAccountLast4: String): Int
+
+    /**
+     * Repairs an account whose rows were never flagged as a credit card.
+     *
+     * The flag used to be dropped whenever a balance was edited, which left the
+     * account being treated as a bank account: spending was subtracted from the
+     * outstanding amount instead of added to it, and at a zero balance it was
+     * discarded entirely. Marking the account as credit has to fix its history
+     * too, not just rows written from then on.
+     */
+    @Query("UPDATE account_balances SET is_credit_card = :isCreditCard WHERE bank_name = :bankName AND account_last4 = :accountLast4")
+    abstract suspend fun setAccountCreditCardFlag(bankName: String, accountLast4: String, isCreditCard: Boolean): Int
  
     @Query("SELECT * FROM account_balances WHERE transaction_id = :transactionId LIMIT 1")
     abstract suspend fun getBalanceByTransactionId(transactionId: Long): AccountBalanceEntity?
@@ -439,12 +451,19 @@ private fun calculateTransactionBalance(
     isCreditCard: Boolean
 ): BigDecimal {
     return when {
+        // Paying a card reduces what is owed. Not clamped at zero either: paying
+        // more than the outstanding amount leaves a credit balance on the card,
+        // and clamping made that payment disappear entirely.
         isCreditCard && transactionType == TransactionType.INCOME ->
-            (currentBalance - amount).max(BigDecimal.ZERO)
+            currentBalance - amount
+        // Anything else on a card is spending, which adds to the outstanding amount.
         isCreditCard -> currentBalance + amount
         transactionType == TransactionType.INCOME || transactionType == TransactionType.CREDIT || transactionType == TransactionType.BORROWED -> currentBalance + amount
+        // Deliberately not clamped at zero. Clamping made an expense against a
+        // zero balance vanish silently: 0 - 500 became 0, so the spend never
+        // registered at all. A balance that should go negative must show negative.
         transactionType == TransactionType.EXPENSE || transactionType == TransactionType.INVESTMENT || transactionType == TransactionType.LENT ->
-            (currentBalance - amount).max(BigDecimal.ZERO)
+            currentBalance - amount
         else -> currentBalance
     }
 }

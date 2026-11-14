@@ -236,6 +236,10 @@ class AccountBalanceRepository @Inject constructor(
         return accountBalanceDao.updateAccountLast4(bankName, oldAccountLast4, newAccountLast4)
     }
 
+    suspend fun setAccountCreditCardFlag(bankName: String, accountLast4: String, isCreditCard: Boolean): Int {
+        return accountBalanceDao.setAccountCreditCardFlag(bankName, accountLast4, isCreditCard)
+    }
+
     suspend fun updateAccountBankName(oldBankName: String, accountLast4: String, newBankName: String): Int {
         return accountBalanceDao.updateAccountBankName(oldBankName, accountLast4, newBankName)
     }

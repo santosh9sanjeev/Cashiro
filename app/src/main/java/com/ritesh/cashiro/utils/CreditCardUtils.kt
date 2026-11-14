@@ -28,11 +28,14 @@ object CreditCardUtils {
     }
 
     /**
-     * Credit still available to spend: limit minus outstanding, never negative.
+     * Credit still available to spend: limit minus outstanding.
+     *
+     * Deliberately unclamped. An overpaid card carries a credit balance and has
+     * more than its limit available; a card pushed over its limit has less than
+     * nothing. Both are real states and hiding them misreports the card.
      */
     fun availableCredit(outstanding: BigDecimal?, creditLimit: BigDecimal?): BigDecimal {
         val limit = creditLimit ?: BigDecimal.ZERO
-        val owed = (outstanding ?: BigDecimal.ZERO).max(BigDecimal.ZERO)
-        return limit.subtract(owed).max(BigDecimal.ZERO)
+        return limit.subtract(outstanding ?: BigDecimal.ZERO)
     }
 }
