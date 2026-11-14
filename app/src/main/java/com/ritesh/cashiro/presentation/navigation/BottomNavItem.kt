@@ -12,10 +12,12 @@ import com.ritesh.cashiro.presentation.ui.icons.AiCommentary
 import com.ritesh.cashiro.presentation.ui.icons.FavoriteChart
 import com.ritesh.cashiro.presentation.ui.icons.Home
 import com.ritesh.cashiro.presentation.ui.icons.ReceiptItem
+import com.ritesh.cashiro.presentation.ui.icons.Wallet3
 import com.ritesh.cashiro.presentation.ui.icons.Iconax
 import kotlin.reflect.KClass
 import com.ritesh.cashiro.presentation.navigation.Home as HomeDestination
 import com.ritesh.cashiro.presentation.navigation.Analytics as AnalyticsDestination
+import com.ritesh.cashiro.presentation.navigation.ManageAccounts as ManageAccountsDestination
 import com.ritesh.cashiro.presentation.navigation.Transactions as TransactionsDestination
 
 sealed class BottomNavItem(
@@ -33,6 +35,14 @@ sealed class BottomNavItem(
         destinationType = HomeDestination::class
     )
     
+    data object Accounts : BottomNavItem(
+        route = "accounts",
+        titleRes = R.string.accounts,
+        icon = Iconax.Wallet3,
+        destination = ManageAccountsDestination,
+        destinationType = ManageAccountsDestination::class
+    )
+
     data object Analytics : BottomNavItem(
         route = "analytics",
         titleRes = R.string.analytics,

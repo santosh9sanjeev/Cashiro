@@ -259,6 +259,7 @@ data class Transactions(
 // Routes where bottom navigation should be visible
 val BOTTOM_NAV_ROUTES = setOf(
     Home::class.qualifiedName,
+    ManageAccounts::class.qualifiedName,
     Analytics::class.qualifiedName,
     Transactions::class.qualifiedName
 )
