@@ -2654,22 +2654,28 @@ private fun TransactionReceipt(
                         }
                     )
 
-                    val fromAccount = transaction.fromAccount ?: transaction.accountNumber
+                    // The account the transaction is on is the source; fromAccount can be
+                    // left over from before the transaction was moved.
+                    val fromAccount = transaction.accountNumber ?: transaction.fromAccount
                     val toAccount = transaction.toAccount
                     val isTransfer = transaction.transactionType == TransactionType.TRANSFER
                     
                     val fromBankName = if (isTransfer) {
-                        availableAccounts.find { it.accountLast4 == fromAccount }?.bankName ?: transaction.bankName ?: fromAccount ?: stringResource(R.string.source)
+                        transaction.bankName ?: availableAccounts.find { it.accountLast4 == fromAccount }?.bankName ?: fromAccount ?: stringResource(R.string.source)
                     } else {
                         transaction.bankName ?: stringResource(R.string.account)
                     }
                     
                     val toBankName = if (isTransfer && toAccount != null) {
-                        availableAccounts.find { it.accountLast4 == toAccount }?.bankName ?: toAccount
+                        destinationOf(availableAccounts, toAccount, transaction.bankName, fromAccount)?.bankName ?: toAccount
                     } else null
 
-                    val fromAccountEntity = availableAccounts.find { it.accountLast4 == fromAccount }
-                    val toAccountEntity = toAccount?.let { acc -> availableAccounts.find { it.accountLast4 == acc } }
+                    val fromAccountEntity = availableAccounts.find {
+                        it.bankName == transaction.bankName && it.accountLast4 == fromAccount
+                    } ?: availableAccounts.find { it.accountLast4 == fromAccount }
+                    val toAccountEntity = toAccount?.let {
+                        destinationOf(availableAccounts, it, transaction.bankName, fromAccount)
+                    }
 
                     ReceiptInfoRow(
                         label = stringResource(R.string.account),
@@ -4083,4 +4089,19 @@ private fun shareReceiptAsPng(
     } catch (e: Exception) {
         Log.e("TransactionDetail", "Error sharing receipt", e)
     }
+}
+
+/**
+ * The account a transfer went to. Only its last four digits are stored, so when
+ * more than one account ends in them, never pick the account the money left.
+ */
+private fun destinationOf(
+    accounts: List<AccountBalanceEntity>,
+    last4: String,
+    sourceBank: String?,
+    sourceLast4: String?
+): AccountBalanceEntity? {
+    val candidates = accounts.filter { it.accountLast4 == last4 }
+    return candidates.firstOrNull { !(it.bankName == sourceBank && it.accountLast4 == sourceLast4) }
+        ?: candidates.firstOrNull()
 }

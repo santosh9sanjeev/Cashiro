@@ -5,6 +5,7 @@ import com.ritesh.cashiro.data.database.dao.AccountBalanceDao
 import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
 import com.ritesh.cashiro.data.database.entity.TransactionType
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.math.BigDecimal
 import java.time.LocalDateTime
 import com.ritesh.cashiro.data.database.entity.TransactionEntity
@@ -61,12 +62,44 @@ class AccountBalanceRepository @Inject constructor(
         entity: TransactionEntity,
         parsedTransaction: ParsedTransaction
     ): TransactionEntity {
-        if (!parsedTransaction.isFromCard && entity.bankName != null && entity.accountNumber != null) {
-            return entity.copy(
-                accountNumber = resolveAccountLast4(entity.bankName, entity.accountNumber)
-            )
-        }
-        return entity
+        val withAccount =
+            if (!parsedTransaction.isFromCard && entity.bankName != null && entity.accountNumber != null) {
+                entity.copy(
+                    accountNumber = resolveAccountLast4(entity.bankName, entity.accountNumber)
+                )
+            } else {
+                entity
+            }
+        return resolveBankByLast4(withAccount, parsedTransaction.isFromCard)
+    }
+
+    /**
+     * Attributes an alert to the account the user set up for its last four digits
+     * when the bank name the parser reports differs from the name that account was
+     * given.
+     *
+     * Accounts are keyed by bank name and last four digits, so a card created by
+     * hand under any other spelling of the bank never matched its own alerts: they
+     * went to a second account the app created under the parser's name, and the
+     * card the user set up stayed at zero. Only an unambiguous match is used - a
+     * single account of the same kind (a card alert to a credit card, anything else
+     * to a non-card account) - so an unrelated account that happens to share the
+     * digits is never picked.
+     */
+    private suspend fun resolveBankByLast4(
+        entity: TransactionEntity,
+        isFromCard: Boolean
+    ): TransactionEntity {
+        val bankName = entity.bankName ?: return entity
+        val last4 = entity.accountNumber ?: return entity
+        if (last4.length != 4 || !last4.all { it.isDigit() }) return entity
+        if (accountBalanceDao.getLatestBalance(bankName, last4) != null) return entity
+
+        val candidates = accountBalanceDao.getAllLatestBalances().first()
+            .filter { it.accountLast4 == last4 && it.bankName != bankName }
+            .filter { it.isCreditCard == isFromCard }
+            .distinctBy { it.bankName }
+        return if (candidates.size == 1) entity.copy(bankName = candidates.single().bankName) else entity
     }
 
     fun getLatestBalanceFlow(bankName: String, accountLast4: String): Flow<AccountBalanceEntity?> {
@@ -260,6 +293,10 @@ class AccountBalanceRepository @Inject constructor(
         return accountBalanceDao.getBalanceByTransactionId(transactionId)
     }
 
+    suspend fun getBalancesByTransactionId(transactionId: Long): List<AccountBalanceEntity> {
+        return accountBalanceDao.getBalancesByTransactionId(transactionId)
+    }
+
     suspend fun getBalanceById(id: Long): AccountBalanceEntity? {
         return accountBalanceDao.getBalanceById(id)
     }
@@ -268,8 +305,15 @@ class AccountBalanceRepository @Inject constructor(
         bankName: String,
         accountLast4: String,
         timestamp: LocalDateTime,
-        startingBalance: BigDecimal
+        startingBalance: BigDecimal,
+        previousOldBalance: BigDecimal? = null
     ) {
-        accountBalanceDao.recalculateBalancesAfter(bankName, accountLast4, timestamp, startingBalance)
+        accountBalanceDao.recalculateBalancesAfter(
+            bankName,
+            accountLast4,
+            timestamp,
+            startingBalance,
+            previousOldBalance
+        )
     }
 }

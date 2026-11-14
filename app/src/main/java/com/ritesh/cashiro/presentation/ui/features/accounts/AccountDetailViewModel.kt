@@ -128,7 +128,7 @@ class AccountDetailViewModel @Inject constructor(
                         totalIncome += convertedAmount
                     } else if (transaction.transactionType == TransactionType.TRANSFER) {
                         val isSender = transaction.bankName == bankName && 
-                            (transaction.accountNumber == accountLast4 || transaction.fromAccount == accountLast4)
+                            (transaction.accountNumber ?: transaction.fromAccount) == accountLast4
                         val isReceiver = !isSender && transaction.toAccount == accountLast4
 
                         if (isReceiver) {

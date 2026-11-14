@@ -484,6 +484,10 @@ class AccountBalanceRepositoryTest {
             return balances.find { it.id == id }
         }
 
+        override suspend fun getBalancesByTransactionId(transactionId: Long): List<AccountBalanceEntity> {
+            return balances.filter { it.transactionId == transactionId }
+        }
+
         override suspend fun insertBalance(balance: AccountBalanceEntity): Long {
             val id = balance.id.takeIf { it != 0L } ?: nextId++
             val saved = balance.copy(id = id)

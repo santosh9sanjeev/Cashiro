@@ -105,7 +105,7 @@ fun SharedTransitionScope.TransactionItem(
     val effectiveSign = remember(transaction, currentAccountContext, currentBankNameContext) {
         if (transaction?.transactionType == TransactionType.TRANSFER && currentAccountContext != null && currentBankNameContext != null) {
             val isSender = transaction.bankName == currentBankNameContext && 
-                (transaction.accountNumber == currentAccountContext || transaction.fromAccount == currentAccountContext)
+                (transaction.accountNumber ?: transaction.fromAccount) == currentAccountContext
             val isReceiver = !isSender && transaction.toAccount == currentAccountContext
             
             if (isSender) "-" else if (isReceiver) "+" else null

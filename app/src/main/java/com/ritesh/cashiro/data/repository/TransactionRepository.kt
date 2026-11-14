@@ -1,5 +1,7 @@
 package com.ritesh.cashiro.data.repository
 
+import com.ritesh.cashiro.data.database.dao.SOURCE_SMS_BALANCE
+import com.ritesh.cashiro.data.database.dao.SOURCE_TRANSACTION_SMS_BALANCE
 import com.ritesh.cashiro.data.database.dao.balanceDelta
 import android.util.Log
 import com.ritesh.cashiro.data.currency.CurrencyConverter
@@ -204,36 +206,300 @@ class TransactionRepository @Inject constructor(
         val bankName = transaction.bankName
         val accountLast4 = transaction.accountNumber
 
-        if (transaction.transactionType == TransactionType.TRANSFER) {
-            // A transfer is written as an EXPENSE leg on the source and an INCOME
-            // leg on the target (see AddTransactionUseCase), so it is undone with
-            // exactly those rules: a card source owes more, a card target owes less.
-            if (bankName != null && accountLast4 != null) {
-                adjustBalance(
-                    bankName, accountLast4, transaction.amount, TransactionType.EXPENSE,
-                    reverse, sourceType, transaction.currency
-                )
-            }
-            // Exclude the source so a transfer can never resolve back onto the
-            // account it left, which would cancel itself out.
-            val target = transaction.toAccount?.let {
-                findAccountByLast4(it, excludeBank = bankName, excludeLast4 = accountLast4)
-            }
-            if (target != null) {
-                adjustBalance(
-                    target.bankName, target.accountLast4, transaction.amount, TransactionType.INCOME,
-                    reverse, sourceType, transaction.currency
-                )
-            }
+        if (transaction.transactionType != TransactionType.TRANSFER) {
+            // A linked debit card's transactions name the card but move the account
+            // it draws from, so that is the account to undo or redo them on.
+            val home = homeAccountOf(
+                transaction,
+                accountBalanceRepository.getBalancesByTransactionId(transaction.id)
+            ) ?: return
+            adjustBalance(
+                home.bankName, home.accountLast4, transaction.amount, transaction.transactionType,
+                reverse, sourceType, transaction.currency
+            )
             return
         }
 
-        if (bankName == null || accountLast4 == null) return
-        adjustBalance(
-            bankName, accountLast4, transaction.amount, transaction.transactionType,
-            reverse, sourceType, transaction.currency
+        // A transfer is written as an EXPENSE leg on the source and an INCOME
+        // leg on the target (see AddTransactionUseCase), so it is undone with
+        // exactly those rules: a card source owes more, a card target owes less.
+        if (bankName != null && accountLast4 != null) {
+            adjustBalance(
+                bankName, accountLast4, transaction.amount, TransactionType.EXPENSE,
+                reverse, sourceType, transaction.currency
+            )
+        }
+        // Exclude the source so a transfer can never resolve back onto the
+        // account it left, which would cancel itself out.
+        val target = transaction.toAccount?.let {
+            findAccountByLast4(it, excludeBank = bankName, excludeLast4 = accountLast4)
+        }
+        if (target != null) {
+            adjustBalance(
+                target.bankName, target.accountLast4, transaction.amount, TransactionType.INCOME,
+                reverse, sourceType, transaction.currency
+            )
+        }
+    }
+
+    /**
+     * The account a non-transfer transaction actually moves.
+     *
+     * Normally the account it names. A debit card linked to a bank account is the
+     * exception: its alerts name the card, but the money comes out of the linked
+     * account and that is where its balance row was written. When the named
+     * account does not exist as an account, the row the transaction wrote says
+     * where its effect lives.
+     */
+    private suspend fun homeAccountOf(
+        transaction: TransactionEntity,
+        linkedRows: List<AccountBalanceEntity>
+    ): AccountKey? {
+        val bankName = transaction.bankName ?: return null
+        val accountLast4 = transaction.accountNumber ?: return null
+        if (accountBalanceRepository.getLatestBalance(bankName, accountLast4) != null) {
+            return AccountKey(bankName, accountLast4)
+        }
+        val routed = linkedRows.firstOrNull {
+            it.bankName != bankName || it.accountLast4 != accountLast4
+        } ?: return null
+        return AccountKey(routed.bankName, routed.accountLast4)
+    }
+
+    /**
+     * Brings account balances in line with an edited transaction.
+     *
+     * The edited transaction has one leg (the account it names) or, for a
+     * transfer, two: money out of the source and into the destination. Each
+     * balance row the transaction wrote is checked against those legs. A row on an
+     * account the transaction no longer touches is removed, a row whose effect is
+     * no longer right is rewritten, and a leg with no row yet is added. Every
+     * change is made at the transaction's own time and carried through the rows
+     * after it, so the account's history stays consistent instead of having a
+     * correction stacked on top of it.
+     *
+     * Before this, only the source account was ever adjusted, and only when the
+     * transaction was already a transfer. Turning an expense into a transfer to a
+     * credit card handed the money back to the bank account and never touched the
+     * card, so its outstanding amount stayed where it was.
+     *
+     * A balance the bank reported is kept as reported: the bank's figure already
+     * reflects the transaction, whatever it is relabelled as.
+     */
+    suspend fun rebalanceAfterEdit(old: TransactionEntity, new: TransactionEntity) {
+        // A balance update records what an account held; it never moved money.
+        if (old.transactionType == TransactionType.BALANCE_UPDATE ||
+            new.transactionType == TransactionType.BALANCE_UPDATE
+        ) return
+
+        val linkedRows = accountBalanceRepository.getBalancesByTransactionId(new.id)
+        val oldLegs = legsOf(old, linkedRows)
+        val newLegs = legsOf(new, linkedRows)
+        val movedInTime = old.dateTime != new.dateTime
+        val settled = mutableSetOf<AccountKey>()
+
+        for (row in linkedRows) {
+            val account = AccountKey(row.bankName, row.accountLast4)
+            val leg = newLegs.firstOrNull { it.account == account }
+            val oldLeg = oldLegs.firstOrNull { it.account == account }
+            when {
+                // The transaction no longer touches this account, or this is a
+                // stray second row for an account already dealt with.
+                leg == null || account in settled -> removeRow(row, oldLeg, old)
+                movedInTime -> {
+                    moveRow(row, oldLeg, old, leg, new)
+                    settled += account
+                }
+                else -> {
+                    rewriteRow(row, oldLeg, old, leg, new)
+                    settled += account
+                }
+            }
+        }
+
+        // Legs with no row yet: a transfer's destination that was never credited,
+        // or the account a transaction has just been moved to.
+        for (leg in newLegs) {
+            if (leg.account !in settled) insertLeg(new, leg, explicitBalance = null)
+        }
+    }
+
+    private data class AccountKey(val bankName: String, val accountLast4: String)
+
+    private data class Leg(val account: AccountKey, val type: TransactionType)
+
+    /** The accounts a transaction moves money on, with the rule each one follows. */
+    private suspend fun legsOf(
+        transaction: TransactionEntity,
+        linkedRows: List<AccountBalanceEntity>
+    ): List<Leg> {
+        if (transaction.isDeleted) return emptyList()
+
+        if (transaction.transactionType != TransactionType.TRANSFER) {
+            val home = homeAccountOf(transaction, linkedRows) ?: return emptyList()
+            return listOf(Leg(home, transaction.transactionType))
+        }
+
+        val bankName = transaction.bankName
+        val accountLast4 = transaction.accountNumber
+        val source = if (bankName != null && accountLast4 != null) {
+            Leg(AccountKey(bankName, accountLast4), TransactionType.EXPENSE)
+        } else {
+            null
+        }
+        val target = transaction.toAccount
+            ?.let { findAccountByLast4(it, excludeBank = bankName, excludeLast4 = accountLast4) }
+            ?.let { Leg(AccountKey(it.bankName, it.accountLast4), TransactionType.INCOME) }
+        return listOfNotNull(source, target)
+    }
+
+    /** Re-derives a row in place from the row before it, then carries the change forward. */
+    private suspend fun rewriteRow(
+        row: AccountBalanceEntity,
+        oldLeg: Leg?,
+        old: TransactionEntity,
+        leg: Leg,
+        new: TransactionEntity
+    ) {
+        if (isBankReported(row, new)) {
+            restoreReportedBalance(row, new)
+            return
+        }
+
+        // A foreign-currency row was converted at the rate of the day it was
+        // applied. If nothing about it changed, leave it at that rate rather
+        // than re-converting it every time the transaction is opened and saved.
+        val unchanged = oldLeg?.type == leg.type && sameMoney(old, new)
+        if (unchanged && !new.currency.equals(row.currency, ignoreCase = true)) return
+
+        val before = accountBalanceRepository.getLatestBalanceOnOrBefore(
+            row.bankName, row.accountLast4, row.timestamp.minusNanos(1)
+        )
+        val base = before?.balance
+            ?: (row.balance - effectOn(row, oldLeg?.type ?: legTypeWithoutLeg(old), old))
+        val updated = base + effectOn(row, leg.type, new)
+        if (updated.compareTo(row.balance) == 0) return
+
+        accountBalanceRepository.updateBalance(row.copy(balance = updated))
+        accountBalanceRepository.recalculateBalancesAfter(
+            row.bankName,
+            row.accountLast4,
+            row.timestamp,
+            updated,
+            previousOldBalance = row.balance
         )
     }
+
+    /**
+     * Moves a leg that stays on the same account to the transaction's new time.
+     * The new row goes in before the old one comes out, so an account whose only
+     * row this is never disappears in between.
+     */
+    private suspend fun moveRow(
+        row: AccountBalanceEntity,
+        oldLeg: Leg?,
+        old: TransactionEntity,
+        leg: Leg,
+        new: TransactionEntity
+    ) {
+        val reported = if (isBankReported(row, old)) row.balance else null
+        insertLeg(new, leg, explicitBalance = reported)
+        removeRow(row, oldLeg, old)
+    }
+
+    /** Takes a row out and recalculates the account forward from the row before it. */
+    private suspend fun removeRow(row: AccountBalanceEntity, oldLeg: Leg?, old: TransactionEntity) {
+        // The latest version of the row: an earlier step of the same edit may have
+        // recalculated it.
+        val current = accountBalanceRepository.getBalanceById(row.id) ?: return
+        val before = accountBalanceRepository.getLatestBalanceOnOrBefore(
+            current.bankName, current.accountLast4, current.timestamp.minusNanos(1)
+        )
+        val base = before?.balance
+            ?: (current.balance - effectOn(current, oldLeg?.type ?: legTypeWithoutLeg(old), old))
+        accountBalanceRepository.deleteBalanceById(current.id)
+        accountBalanceRepository.recalculateBalancesAfter(
+            current.bankName,
+            current.accountLast4,
+            current.timestamp,
+            base,
+            previousOldBalance = current.balance
+        )
+    }
+
+    /** Applies one leg at the transaction's time, exactly as a new transaction would be. */
+    private suspend fun insertLeg(transaction: TransactionEntity, leg: Leg, explicitBalance: BigDecimal?) {
+        // Only onto an account that exists: an edit never conjures one up.
+        val account = accountBalanceRepository
+            .getLatestBalance(leg.account.bankName, leg.account.accountLast4) ?: return
+        val amount = currencyConversionService.convertAmount(
+            amount = transaction.amount,
+            fromCurrency = transaction.currency,
+            toCurrency = account.currency
+        )
+        accountBalanceRepository.insertTransactionBalance(
+            bankName = leg.account.bankName,
+            accountLast4 = leg.account.accountLast4,
+            amount = amount,
+            transactionType = leg.type,
+            explicitBalance = explicitBalance,
+            timestamp = transaction.dateTime,
+            transactionId = transaction.id,
+            creditLimit = null,
+            isCreditCard = account.isCreditCard,
+            smsSource = null,
+            currency = account.currency
+        )
+    }
+
+    /**
+     * A bank-reported balance stays as the bank reported it. The edit code this
+     * replaces could shift one in place; put it back and carry that forward.
+     */
+    private suspend fun restoreReportedBalance(row: AccountBalanceEntity, transaction: TransactionEntity) {
+        val reported = transaction.balanceAfter ?: return
+        if (row.bankName != transaction.bankName || row.accountLast4 != transaction.accountNumber) return
+        if (!transaction.currency.equals(row.currency, ignoreCase = true)) return
+        if (reported.compareTo(row.balance) == 0) return
+
+        accountBalanceRepository.updateBalance(row.copy(balance = reported))
+        accountBalanceRepository.recalculateBalancesAfter(
+            row.bankName,
+            row.accountLast4,
+            row.timestamp,
+            reported,
+            previousOldBalance = row.balance
+        )
+    }
+
+    private fun isBankReported(row: AccountBalanceEntity, transaction: TransactionEntity): Boolean =
+        row.sourceType == SOURCE_TRANSACTION_SMS_BALANCE ||
+            row.sourceType == SOURCE_SMS_BALANCE ||
+            (transaction.balanceAfter != null &&
+                row.bankName == transaction.bankName &&
+                row.accountLast4 == transaction.accountNumber)
+
+    /** The signed change [transaction] makes to [row]'s account under [type]. */
+    private suspend fun effectOn(
+        row: AccountBalanceEntity,
+        type: TransactionType,
+        transaction: TransactionEntity
+    ): BigDecimal {
+        val converted = currencyConversionService.convertAmount(
+            amount = transaction.amount,
+            fromCurrency = transaction.currency,
+            toCurrency = row.currency
+        )
+        return balanceDelta(converted, type, row.isCreditCard)
+    }
+
+    /** For a row on an account that was not one of the transaction's legs. */
+    private fun legTypeWithoutLeg(transaction: TransactionEntity): TransactionType =
+        if (transaction.transactionType == TransactionType.TRANSFER) TransactionType.EXPENSE
+        else transaction.transactionType
+
+    private fun sameMoney(old: TransactionEntity, new: TransactionEntity): Boolean =
+        old.amount.compareTo(new.amount) == 0 && old.currency.equals(new.currency, ignoreCase = true)
 
     private suspend fun adjustBalance(
         bankName: String,

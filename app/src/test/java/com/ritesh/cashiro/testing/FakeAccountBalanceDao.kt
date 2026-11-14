@@ -3,6 +3,7 @@ package com.ritesh.cashiro.testing
 import com.ritesh.cashiro.data.database.dao.AccountBalanceDao
 import com.ritesh.cashiro.data.database.dao.AccountBalanceTransactionInfo
 import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
+import com.ritesh.cashiro.data.database.entity.TransactionEntity
 import java.math.BigDecimal
 import java.time.LocalDateTime
 import kotlinx.coroutines.flow.Flow
@@ -12,19 +13,34 @@ import kotlinx.coroutines.flow.flowOf
  * In-memory stand-in for [AccountBalanceDao].
  *
  * Only the query methods are faked. The balance arithmetic that matters -
- * insertTransactionBalance and the formula it calls - is concrete on the DAO,
- * so tests built on this exercise the real logic rather than a reimplementation
- * of it. Shared between tests deliberately: a second copy of this fake is how
- * the two balanceEffect implementations drifted apart in the first place.
+ * insertTransactionBalance, the recalculation it triggers and the formula both
+ * use - is concrete on the DAO, so tests built on this exercise the real logic
+ * rather than a reimplementation of it. Shared between tests deliberately: a
+ * second copy of this fake is how the two balanceEffect implementations drifted
+ * apart in the first place.
  */
 internal class FakeAccountBalanceDao : AccountBalanceDao() {
 
     private val balances = mutableMapOf<Pair<String, String>, MutableList<AccountBalanceEntity>>()
     private var nextId = 1L
 
+    /**
+     * Stands in for the join on the transactions table that recalculation reads.
+     * Point it at the test's transaction store for anything that recalculates
+     * through rows linked to transactions.
+     */
+    var transactionLookup: (Long) -> TransactionEntity? = { null }
+
     fun seedBalance(entity: AccountBalanceEntity) {
-        val key = Pair(entity.bankName, entity.accountLast4)
-        balances.getOrPut(key) { mutableListOf() }.add(entity.copy(id = nextId++))
+        addRow(entity, nextId++)
+    }
+
+    // The real table has a unique index on (bank, account, timestamp) and inserts
+    // replace on conflict, so a second row at the same instant evicts the first.
+    private fun addRow(entity: AccountBalanceEntity, id: Long) {
+        val rows = balances.getOrPut(Pair(entity.bankName, entity.accountLast4)) { mutableListOf() }
+        rows.removeAll { it.timestamp == entity.timestamp }
+        rows.add(entity.copy(id = id))
     }
 
     /** Seeds a credit card the user set up by hand, before any SMS arrived. */
@@ -33,7 +49,8 @@ internal class FakeAccountBalanceDao : AccountBalanceDao() {
         accountLast4: String,
         outstanding: String,
         limit: String,
-        timestamp: LocalDateTime = LocalDateTime.of(2025, 1, 1, 0, 0)
+        timestamp: LocalDateTime = LocalDateTime.of(2025, 1, 1, 0, 0),
+        currency: String = "INR"
     ) {
         seedBalance(
             AccountBalanceEntity(
@@ -43,7 +60,8 @@ internal class FakeAccountBalanceDao : AccountBalanceDao() {
                 creditLimit = BigDecimal(limit),
                 isCreditCard = true,
                 timestamp = timestamp,
-                sourceType = "MANUAL"
+                sourceType = "MANUAL",
+                currency = currency
             )
         )
     }
@@ -56,9 +74,8 @@ internal class FakeAccountBalanceDao : AccountBalanceDao() {
         balances[Pair(bankName, accountLast4)].orEmpty()
 
     override suspend fun insertBalance(balance: AccountBalanceEntity): Long {
-        val key = Pair(balance.bankName, balance.accountLast4)
         val id = nextId++
-        balances.getOrPut(key) { mutableListOf() }.add(balance.copy(id = id))
+        addRow(balance, id)
         return id
     }
 
@@ -156,23 +173,50 @@ internal class FakeAccountBalanceDao : AccountBalanceDao() {
         return rows.size
     }
 
+    override suspend fun getBalancesAfterWithTransactions(
+        bankName: String,
+        accountLast4: String,
+        timestamp: LocalDateTime
+    ): List<AccountBalanceTransactionInfo> = rowsFor(bankName, accountLast4)
+        .filter { it.timestamp.isAfter(timestamp) }
+        .sortedWith(newestLast)
+        .map { row ->
+            val transaction = row.transactionId?.let(transactionLookup)
+            AccountBalanceTransactionInfo(
+                id = row.id,
+                balance = row.balance,
+                sourceType = row.sourceType,
+                isCreditCard = row.isCreditCard,
+                transactionId = row.transactionId,
+                transactionAmount = transaction?.amount,
+                transactionType = transaction?.transactionType?.name,
+                transactionBalanceAfter = transaction?.balanceAfter,
+                isDeleted = transaction?.isDeleted,
+                accountCurrency = row.currency,
+                transactionCurrency = transaction?.currency,
+                transactionBankName = transaction?.bankName,
+                transactionAccountNumber = transaction?.accountNumber
+            )
+        }
+
+    override suspend fun getBalancesByTransactionId(transactionId: Long): List<AccountBalanceEntity> =
+        balances.values.flatten()
+            .filter { it.transactionId == transactionId }
+            .sortedWith(newestLast)
+
+    // Built fresh on each call, so a caller that takes first() sees the current rows.
+    override fun getAllLatestBalances(): Flow<List<AccountBalanceEntity>> =
+        flowOf(balances.values.mapNotNull { rows -> rows.maxWithOrNull(newestLast) })
+
     // ---- unused by these tests ----
 
     override suspend fun getAccountLast4sEndingWith(bankName: String, suffix: String): List<String> =
         emptyList()
 
-    override suspend fun getBalancesAfterWithTransactions(
-        bankName: String,
-        accountLast4: String,
-        timestamp: LocalDateTime
-    ): List<AccountBalanceTransactionInfo> = emptyList()
-
     override fun getLatestBalanceFlow(
         bankName: String,
         accountLast4: String
     ): Flow<AccountBalanceEntity?> = flowOf(null)
-
-    override fun getAllLatestBalances(): Flow<List<AccountBalanceEntity>> = flowOf(emptyList())
 
     override fun getAllBalances(): Flow<List<AccountBalanceEntity>> = flowOf(emptyList())
 
@@ -208,13 +252,6 @@ internal class FakeAccountBalanceDao : AccountBalanceDao() {
         accountLast4: String,
         newBankName: String
     ): Int = 0
-
-    override suspend fun recalculateBalancesAfter(
-        bankName: String,
-        accountLast4: String,
-        timestamp: LocalDateTime,
-        startingBalance: BigDecimal
-    ) = Unit
 
     override suspend fun getAccountByLast4(accountLast4: String): AccountBalanceEntity? = null
 }

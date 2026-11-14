@@ -1,6 +1,5 @@
 package com.ritesh.cashiro.presentation.ui.features.transactions
 
-import com.ritesh.cashiro.data.database.dao.balanceDelta
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
@@ -651,24 +650,13 @@ class TransactionsViewModel @Inject constructor(
 
                 transactionRepository.updateTransaction(updatedTxn)
 
-                if (newAmount != null && newAmount != txn.amount && txn.bankName != null && txn.accountNumber != null) {
-                    val bankName = txn.bankName
-                    val accountLast4 = txn.accountNumber
-                    val timestamp = updatedDateTime
-
-                    val isCreditCard = accountBalanceRepository
-                        .getLatestBalance(bankName, accountLast4)?.isCreditCard ?: false
-                    val oldEffect = balanceEffect(txn.amount, txn.transactionType, isCreditCard)
-                    val newEffect = balanceEffect(updatedAmount, txn.transactionType, isCreditCard)
-
-                    val linkedEntry = accountBalanceRepository.getBalanceByTransactionId(txn.id)
-                    if (linkedEntry != null) {
-                        // Unclamped: clamping here silently discarded the edit when
-                        // the result would have gone below zero.
-                        val newBalance = linkedEntry.balance - oldEffect + newEffect
-                        accountBalanceRepository.updateBalance(linkedEntry.copy(balance = newBalance))
-                        accountBalanceRepository.recalculateBalancesAfter(bankName, accountLast4, timestamp, newBalance)
-                    }
+                // An amount or date change moves the transaction's effect: through the
+                // same path as a single edit, so transfers, cards and currencies are
+                // handled the same way and a new date takes the balance row with it.
+                val amountChanged = updatedAmount.compareTo(txn.amount) != 0
+                val dateChanged = updatedDateTime != txn.dateTime
+                if (amountChanged || dateChanged) {
+                    transactionRepository.rebalanceAfterEdit(txn, updatedTxn)
                 }
             }
 
@@ -677,13 +665,6 @@ class TransactionsViewModel @Inject constructor(
             onComplete()
         }
     }
-
-    /** The insert path's own rules; see balanceDelta. */
-    private fun balanceEffect(
-        amount: BigDecimal,
-        type: TransactionType,
-        isCreditCard: Boolean = false
-    ): BigDecimal = balanceDelta(amount, type, isCreditCard)
 
     fun resetFilters() {
         hasAppliedInitialFilters = false

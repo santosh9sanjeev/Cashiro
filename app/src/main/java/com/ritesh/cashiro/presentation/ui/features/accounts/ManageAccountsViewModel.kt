@@ -150,6 +150,14 @@ constructor(
     private fun loadCards() {
         viewModelScope.launch {
             cardRepository.getAllCards().collect { allCards ->
+                // Re-filing a card writes to the table, which emits again with the
+                // corrected list, so this stale one is not worth grouping.
+                var refiled = false
+                for (card in allCards) {
+                    if (fileAsCreditCardIfNeeded(card)) refiled = true
+                }
+                if (refiled) return@collect
+
                 // Group cards by linked account
                 val linkedCardsMap = mutableMapOf<String, MutableList<CardEntity>>()
                 val orphaned = mutableListOf<CardEntity>()
@@ -169,6 +177,25 @@ constructor(
                 _uiState.update { it.copy(linkedCards = linkedCardsMap, orphanedCards = orphaned) }
             }
         }
+    }
+
+    /**
+     * Re-files a card as a credit card when the account under its own number is one.
+     *
+     * Cards are first detected from spend alerts, which arrive as expenses, so a
+     * credit card was easily filed as a debit card. Filed that way it is listed
+     * under unlinked cards and can be linked to a bank account, and from then on
+     * its alerts and its balance land on that account instead of the card. A
+     * credit card keeps its own balance, so it is never linked.
+     *
+     * @return whether the card was re-filed.
+     */
+    private suspend fun fileAsCreditCardIfNeeded(card: CardEntity): Boolean {
+        if (card.cardType == CardType.CREDIT) return false
+        val ownAccount = accountBalanceRepository.getLatestBalance(card.bankName, card.cardLast4)
+        if (ownAccount?.isCreditCard != true) return false
+        cardRepository.updateCard(card.copy(cardType = CardType.CREDIT, accountLast4 = null))
+        return true
     }
 
     private fun loadHiddenAccounts() {
@@ -309,6 +336,9 @@ constructor(
                     color = colorHex
                 )
             )
+            if (isCreditCard) {
+                cardRepository.getCard(bankName, accountLast4)?.let { fileAsCreditCardIfNeeded(it) }
+            }
 
             _uiState.update { it.copy(successMessage = "Account added successfully") }
             delay(3000)
@@ -472,6 +502,27 @@ constructor(
 
                 // Get card info first to know if there's a balance to copy
                 val card = cardRepository.getCardById(cardId)
+
+                // A credit card keeps its own balance. Linked to a bank account, its
+                // spending - and its reported balance, copied below - would land on
+                // that account instead.
+                if (card != null && fileAsCreditCardIfNeeded(card)) {
+                    _uiState.update {
+                        it.copy(successMessage = "This is a credit card, so it keeps its own balance")
+                    }
+                    loadCards()
+                    return@launch
+                }
+                val targetAccount = _uiState.value.accounts.firstOrNull {
+                    it.accountLast4 == accountLast4 && it.bankName == card?.bankName
+                }
+                if (targetAccount?.isCreditCard == true && accountLast4 != card?.cardLast4) {
+                    _uiState.update {
+                        it.copy(errorMessage = "A card can't draw from a credit card account")
+                    }
+                    return@launch
+                }
+
                 val hasBalance = card?.lastBalance != null
 
                 // Link the card to the account
@@ -731,6 +782,13 @@ constructor(
                         color = newColorHex
                     )
                 )
+
+                // Marking the account as a credit card has to reach the card behind
+                // it too, or a card filed as debit keeps sending its spending to
+                // whichever bank account it was linked to.
+                if (isCreditCard) {
+                    cardRepository.getCard(newBankName, targetLast4)?.let { fileAsCreditCardIfNeeded(it) }
+                }
 
                 _uiState.update { it.copy(successMessage = "Account updated successfully") }
 

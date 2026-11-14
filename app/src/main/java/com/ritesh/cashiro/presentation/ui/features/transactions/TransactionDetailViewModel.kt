@@ -1,6 +1,5 @@
 package com.ritesh.cashiro.presentation.ui.features.transactions
 
-import com.ritesh.cashiro.data.database.dao.balanceDelta
 import com.ritesh.cashiro.utils.SubscriptionUtils
 
 import android.content.Context
@@ -269,7 +268,12 @@ class TransactionDetailViewModel @Inject constructor(
     val targetAccount: StateFlow<AccountBalanceEntity?> = _uiState.map { state ->
         val transaction = state.editableTransaction
         if (transaction == null) return@map null
-        availableAccounts.value.find { it.accountLast4 == transaction.toAccount }
+        // Only the last four digits are stored for a destination. Never resolve it
+        // to the account the money is leaving.
+        val candidates = availableAccounts.value.filter { it.accountLast4 == transaction.toAccount }
+        candidates.firstOrNull {
+            !(it.bankName == transaction.bankName && it.accountLast4 == transaction.accountNumber)
+        } ?: candidates.firstOrNull()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
 
@@ -597,6 +601,7 @@ class TransactionDetailViewModel @Inject constructor(
                 editableTransaction = current?.copy(
                     bankName = account?.bankName ?: "Manual Entry",
                     accountNumber = account?.accountLast4,
+                    fromAccount = account?.accountLast4,
                     currency = account?.currency ?: current.currency
                 ),
                 accountIconName = account?.iconName // Update the icon name in state too
@@ -657,6 +662,10 @@ class TransactionDetailViewModel @Inject constructor(
                 // Normalize merchant name before saving
                 val normalizedTransaction = toSave.copy(
                     merchantName = normalizeMerchantName(toSave.merchantName),
+                    // The screens show a transfer's source from fromAccount first, so
+                    // it has to follow the account the transaction is on. Left stale,
+                    // a transfer moved off a card kept showing as coming from it.
+                    fromAccount = toSave.accountNumber ?: toSave.fromAccount,
                     billingCycle = finalBillingCycle,
                     updatedAt = LocalDateTime.now(),
                     attachments = attachmentService.joinAttachments(_editableAttachments.value)
@@ -664,10 +673,11 @@ class TransactionDetailViewModel @Inject constructor(
 
                 transactionRepository.updateTransaction(normalizedTransaction)
 
-                // Handle Balance Updates
+                // Bring every account the transaction touches - before and after
+                // the edit - in line with what it now is.
                 val originalTransaction = state.transaction
                 if (originalTransaction != null) {
-                    updateAccountBalances(originalTransaction, normalizedTransaction)
+                    transactionRepository.rebalanceAfterEdit(originalTransaction, normalizedTransaction)
                 }
 
                 // Sync with subscriptions if recurring
@@ -870,201 +880,5 @@ class TransactionDetailViewModel @Inject constructor(
                 subscriptionRepository.hideSubscription(existing.id)
             }
         }
-    }
-
-
-    private suspend fun updateAccountBalances(
-        oldTransaction: TransactionEntity,
-        newTransaction: TransactionEntity
-    ) {
-        if (oldTransaction.transactionType == TransactionType.TRANSFER) {
-            handleTransferBalanceEdit(oldTransaction, newTransaction)
-            return
-        }
-        // Moving a transaction to a different account has to take its effect off
-        // the old account and put it on the new one. Previously only the old
-        // account was ever touched, so the destination never saw the transaction
-        // and kept reporting zero while transactions were listed against it.
-        val accountChanged =
-            oldTransaction.bankName != newTransaction.bankName ||
-                oldTransaction.accountNumber != newTransaction.accountNumber
-        if (accountChanged) {
-            moveTransactionBetweenAccounts(oldTransaction, newTransaction)
-            return
-        }
-
-        if (oldTransaction.bankName != null && oldTransaction.accountNumber != null) {
-            updateNonTransferBalance(oldTransaction, newTransaction)
-        }
-    }
-
-    /**
-     * Re-homes a transaction's balance effect when its account changes.
-     *
-     * The balance row linked to the transaction is deleted from the old account
-     * and that account recalculated forward, then the transaction is applied to
-     * the new account through the normal insert path so credit cards, currency
-     * conversion and the forward cascade all behave as they do everywhere else.
-     */
-    private suspend fun moveTransactionBetweenAccounts(
-        oldTransaction: TransactionEntity,
-        newTransaction: TransactionEntity
-    ) {
-        val timestamp = oldTransaction.dateTime ?: LocalDateTime.now()
-
-        val oldBank = oldTransaction.bankName
-        val oldLast4 = oldTransaction.accountNumber
-        if (oldBank != null && oldLast4 != null) {
-            val linkedEntry = accountBalanceRepository.getBalanceByTransactionId(oldTransaction.id)
-            if (linkedEntry != null) {
-                val previous = accountBalanceRepository
-                    .getLatestBalanceOnOrBefore(oldBank, oldLast4, timestamp.minusNanos(1))
-                accountBalanceRepository.deleteBalanceById(linkedEntry.id)
-                accountBalanceRepository.recalculateBalancesAfter(
-                    oldBank,
-                    oldLast4,
-                    timestamp,
-                    previous?.balance ?: BigDecimal.ZERO
-                )
-            }
-        }
-
-        val newBank = newTransaction.bankName
-        val newLast4 = newTransaction.accountNumber
-        if (newBank != null && newLast4 != null) {
-            val target = accountBalanceRepository.getLatestBalance(newBank, newLast4)
-            val targetCurrency = target?.currency ?: newTransaction.currency
-            accountBalanceRepository.insertTransactionBalance(
-                bankName = newBank,
-                accountLast4 = newLast4,
-                amount = currencyConversionService.convertAmount(
-                    newTransaction.amount,
-                    newTransaction.currency,
-                    targetCurrency
-                ),
-                transactionType = newTransaction.transactionType,
-                explicitBalance = null,
-                timestamp = newTransaction.dateTime ?: timestamp,
-                transactionId = newTransaction.id,
-                creditLimit = null,
-                isCreditCard = target?.isCreditCard ?: false,
-                smsSource = null,
-                currency = targetCurrency
-            )
-        }
-    }
-
-    private suspend fun updateNonTransferBalance(
-        oldTransaction: TransactionEntity,
-        newTransaction: TransactionEntity
-    ) {
-        val bankName = oldTransaction.bankName!!
-        val accountLast4 = oldTransaction.accountNumber!!
-        val timestamp = oldTransaction.dateTime ?: LocalDateTime.now()
-
-        val account = accountBalanceRepository.getLatestBalance(bankName, accountLast4)
-        val isCreditCard = account?.isCreditCard ?: false
-        val accountCurrency = account?.currency ?: newTransaction.currency
-
-        // Both figures have to be expressed in the account's currency before they
-        // can be compared against a balance held in that currency.
-        val oldAmount = currencyConversionService.convertAmount(
-            oldTransaction.amount, oldTransaction.currency, accountCurrency
-        )
-        val newAmount = currencyConversionService.convertAmount(
-            newTransaction.amount, newTransaction.currency, accountCurrency
-        )
-        val oldEffect = balanceEffect(oldAmount, oldTransaction.transactionType, isCreditCard)
-        val newEffect = balanceEffect(newAmount, newTransaction.transactionType, isCreditCard)
-
-        // Fix the historical balance entry at the transaction's timestamp, then
-        // recalculate forward — this cascades the change to all subsequent entries
-        // including the latest balance. No additional delta application needed.
-        val linkedEntry = accountBalanceRepository.getBalanceByTransactionId(oldTransaction.id)
-        if (linkedEntry != null) {
-            val newBalance = linkedEntry.balance - oldEffect + newEffect
-            accountBalanceRepository.updateBalance(linkedEntry.copy(balance = newBalance))
-            accountBalanceRepository.recalculateBalancesAfter(bankName, accountLast4, timestamp, newBalance)
-        }
-    }
-
-    private suspend fun handleTransferBalanceEdit(
-        oldTransaction: TransactionEntity,
-        newTransaction: TransactionEntity
-    ) {
-        val oldAmount = oldTransaction.amount
-        val newAmount = newTransaction.amount
-        val difference = newAmount - oldAmount
-
-        // Money leaves the source. On a bank account that lowers the balance; on a
-        // credit card it raises the outstanding amount, so the sign flips.
-        if (difference != BigDecimal.ZERO && oldTransaction.bankName != null && oldTransaction.accountNumber != null) {
-            val sourceIsCreditCard = accountBalanceRepository
-                .getLatestBalance(oldTransaction.bankName, oldTransaction.accountNumber)
-                ?.isCreditCard ?: false
-            val sourceDelta = if (sourceIsCreditCard) difference else difference.negate()
-            applyBalanceWithDelta(oldTransaction.bankName, oldTransaction.accountNumber, sourceDelta, newTransaction.currency)
-        }
-
-        // Money arrives at the target. Paying a credit card bill lands here and has
-        // to reduce the outstanding amount rather than increase a balance.
-        val oldTarget = oldTransaction.toAccount
-        val newTarget = newTransaction.toAccount
-        if (oldTarget != null && difference != BigDecimal.ZERO) {
-            findAccountByLast4(oldTarget)?.let { target ->
-                val targetDelta = if (target.isCreditCard) difference.negate() else difference
-                applyBalanceWithDelta(target.bankName, target.accountLast4, targetDelta, newTransaction.currency)
-            }
-        }
-        if (newTarget != null && newTarget != oldTarget) {
-            findAccountByLast4(newTarget)?.let { target ->
-                val targetDelta = if (target.isCreditCard) newAmount.negate() else newAmount
-                applyBalanceWithDelta(target.bankName, target.accountLast4, targetDelta, newTransaction.currency)
-            }
-        }
-    }
-
-    /** The insert path's own rules; see balanceDelta. */
-    private fun balanceEffect(
-        amount: BigDecimal,
-        type: TransactionType,
-        isCreditCard: Boolean = false
-    ): BigDecimal = balanceDelta(amount, type, isCreditCard)
-
-    private suspend fun applyBalanceWithDelta(
-        bankName: String,
-        accountLast4: String,
-        delta: BigDecimal,
-        currency: String
-    ) {
-        val currentBalance = accountBalanceRepository.getLatestBalance(bankName, accountLast4)
-        // Convert the delta into whatever currency this account actually holds.
-        val accountCurrency = currentBalance?.currency ?: currency
-        val convertedDelta = currencyConversionService.convertAmount(
-            amount = delta.abs(),
-            fromCurrency = currency,
-            toCurrency = accountCurrency
-        ).let { if (delta.signum() < 0) it.negate() else it }
-        val newBalance = (currentBalance?.balance ?: BigDecimal.ZERO) + convertedDelta
-        accountBalanceRepository.insertBalance(
-            AccountBalanceEntity(
-                bankName = bankName,
-                accountLast4 = accountLast4,
-                balance = newBalance,
-                timestamp = LocalDateTime.now(),
-                transactionId = null,
-                sourceType = "MANUAL_EDIT",
-                iconResId = currentBalance?.iconResId ?: 0,
-                isCreditCard = currentBalance?.isCreditCard ?: false,
-                isWallet = currentBalance?.isWallet ?: false,
-                creditLimit = currentBalance?.creditLimit,
-                currency = currency
-            )
-        )
-    }
-
-    private suspend fun findAccountByLast4(last4: String): AccountBalanceEntity? {
-        return accountBalanceRepository.getAllLatestBalances().first()
-            .find { it.accountLast4 == last4 }
     }
 }

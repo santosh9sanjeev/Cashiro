@@ -2,6 +2,7 @@ package com.ritesh.cashiro.data.manager
 
 import android.content.ContextWrapper
 import com.ritesh.cashiro.data.currency.CurrencyConverter
+import com.ritesh.cashiro.data.database.entity.AccountBalanceEntity
 import com.ritesh.cashiro.data.database.dao.CardDao
 import com.ritesh.cashiro.data.database.entity.CardEntity
 import com.ritesh.cashiro.data.database.entity.CardType
@@ -79,6 +80,41 @@ class BalanceUpdateProcessorTest {
         processor.process(parsedCardSpend("500"), entity(), rowId = 1L)
 
         assertNotNull(balanceDao.latest(bank, "9999"))
+    }
+
+    @Test
+    fun `a credit card filed as a linked debit card is charged on the card`() = runTest {
+        val balanceDao = FakeAccountBalanceDao()
+        // The user set the card up as a credit card...
+        balanceDao.seedCreditCard(bank, cardLast4, outstanding = "0", limit = "5000")
+        balanceDao.seedBalance(
+            AccountBalanceEntity(
+                bankName = bank,
+                accountLast4 = "9999",
+                balance = BigDecimal("10000"),
+                timestamp = LocalDateTime.of(2025, 1, 1, 0, 0),
+                sourceType = "MANUAL"
+            )
+        )
+        // ...but its first alert filed it as a debit card, since linked to the
+        // bank account.
+        val cardDao = FakeCardDao()
+        cardDao.cards += CardEntity(
+            id = 1L,
+            cardLast4 = cardLast4,
+            cardType = CardType.DEBIT,
+            bankName = bank,
+            accountLast4 = "9999"
+        )
+        val processor = processorWith(balanceDao, cardDao)
+
+        processor.process(parsedCardSpend("500"), entity(), rowId = 1L)
+
+        assertEquals(BigDecimal("500"), balanceDao.latest(bank, cardLast4)?.balance)
+        assertEquals(BigDecimal("10000"), balanceDao.latest(bank, "9999")?.balance)
+        val refiled = cardDao.cards.single()
+        assertEquals(CardType.CREDIT, refiled.cardType)
+        assertEquals(null, refiled.accountLast4)
     }
 
     private fun processorWith(balanceDao: FakeAccountBalanceDao, cardDao: FakeCardDao) =

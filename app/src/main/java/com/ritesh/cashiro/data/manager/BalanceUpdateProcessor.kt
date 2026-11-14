@@ -32,34 +32,48 @@ class BalanceUpdateProcessor @Inject constructor(
         entity: TransactionEntity,
         rowId: Long
     ) {
+        // The saved transaction carries the account it was attributed to, which can
+        // differ from the parser's raw values: a partial number expanded to the
+        // account it belongs to, or a bank name matched to the account the user set
+        // up for those digits. The balance has to land on that same account, or the
+        // transaction is listed under one account while another one moves.
+        val bankName = entity.bankName ?: parsedTransaction.bankName
         val parsedAccountLast4 = parsedTransaction.accountLast4?.takeIf { it.isNotBlank() }
         val resolvedAccountLast4 = entity.accountNumber?.takeIf { it.isNotBlank() }
-        val fallbackAccountLast4 = parsedAccountLast4 ?: resolvedAccountLast4
+        val fallbackAccountLast4 = resolvedAccountLast4 ?: parsedAccountLast4
         if (fallbackAccountLast4 == null) return
 
         val isFromCard = parsedTransaction.isFromCard
 
         val targetAccountLast4: String? = if (isFromCard) {
-            var card = cardRepository.getCard(parsedTransaction.bankName, fallbackAccountLast4)
+            var card = cardRepository.getCard(bankName, fallbackAccountLast4)
+            // How the user set this number up outranks how the card was first
+            // detected: card spending arrives as EXPENSE, so the transaction type
+            // alone files a credit card as a debit card.
+            val ownAccountIsCreditCard = accountBalanceRepository
+                .getLatestBalance(bankName, fallbackAccountLast4)
+                ?.isCreditCard == true
 
             if (card == null) {
-                // Card spending arrives as EXPENSE, so the transaction type alone
-                // would classify a credit card as a debit card. If the user already
-                // has an account under this number, trust how they set it up.
-                val existingAccount = accountBalanceRepository
-                    .getLatestBalance(parsedTransaction.bankName, fallbackAccountLast4)
                 val isCredit = (parsedTransaction.type.toEntityType() == TransactionType.CREDIT) ||
-                        (existingAccount?.isCreditCard ?: false)
+                        ownAccountIsCreditCard
                 cardRepository.findOrCreateCard(
                     cardLast4 = fallbackAccountLast4,
-                    bankName = parsedTransaction.bankName,
+                    bankName = bankName,
                     isCredit = isCredit
                 )
-                card = cardRepository.getCard(parsedTransaction.bankName, fallbackAccountLast4)
+                card = cardRepository.getCard(bankName, fallbackAccountLast4)
+            } else if (card.cardType != CardType.CREDIT && ownAccountIsCreditCard) {
+                // A credit card filed as a debit card could be linked to a bank
+                // account, and from then on every alert for it - and its reported
+                // balance - landed on that account instead of the card. Re-file it as
+                // the credit card the user says it is, with no link.
+                cardRepository.updateCard(card.copy(cardType = CardType.CREDIT, accountLast4 = null))
+                card = cardRepository.getCard(bankName, fallbackAccountLast4)
             }
 
             if (card == null) {
-                Log.w(TAG, "Could not create/find card for ${parsedTransaction.bankName}")
+                Log.w(TAG, "Could not create/find card for $bankName")
                 null
             } else {
                 cardRepository.updateCardBalance(
@@ -90,7 +104,7 @@ class BalanceUpdateProcessor @Inject constructor(
         if (targetAccountLast4 != null) {
             val isCreditCard = (parsedTransaction.type.toEntityType() == TransactionType.CREDIT) ||
                     fallbackAccountLast4.let {
-                        cardRepository.getCard(parsedTransaction.bankName, it)?.cardType
+                        cardRepository.getCard(bankName, it)?.cardType
                     } == CardType.CREDIT
 
             // A transaction can arrive in a different currency from the account it
@@ -98,7 +112,7 @@ class BalanceUpdateProcessor @Inject constructor(
             // account's own currency, otherwise the raw figure is subtracted as
             // though 30 USD and 30 AED were the same amount of money.
             val accountCurrency = accountBalanceRepository
-                .getLatestBalance(parsedTransaction.bankName, targetAccountLast4)
+                .getLatestBalance(bankName, targetAccountLast4)
                 ?.currency ?: parsedTransaction.currency
             val amountInAccountCurrency = currencyConversionService.convertAmount(
                 amount = parsedTransaction.amount,
@@ -107,7 +121,7 @@ class BalanceUpdateProcessor @Inject constructor(
             )
 
             accountBalanceRepository.insertTransactionBalance(
-                bankName = parsedTransaction.bankName,
+                bankName = bankName,
                 accountLast4 = targetAccountLast4,
                 amount = amountInAccountCurrency,
                 transactionType = parsedTransaction.type.toEntityType(),

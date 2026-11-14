@@ -53,6 +53,8 @@ jobs:
           --tests "com.ritesh.cashiro.data.database.dao.BalanceMathTest"
           --tests "com.ritesh.cashiro.data.manager.BalanceUpdateProcessorTest"
           --tests "com.ritesh.cashiro.domain.usecase.AddTransactionUseCaseTest"
+          --tests "com.ritesh.cashiro.data.repository.TransactionEditRebalanceTest"
+          --tests "com.ritesh.cashiro.data.repository.AccountAttributionTest"
 
       # Same idea for test failures: one annotation per failing test, carrying
       # the assertion message.

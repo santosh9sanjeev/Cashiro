@@ -8,10 +8,10 @@ import java.math.BigDecimal
 import java.time.LocalDateTime
 
 private const val SOURCE_TRANSACTION_CALCULATED = "TRANSACTION_CALCULATED"
-private const val SOURCE_TRANSACTION_SMS_BALANCE = "TRANSACTION_SMS_BALANCE"
+internal const val SOURCE_TRANSACTION_SMS_BALANCE = "TRANSACTION_SMS_BALANCE"
 private const val SOURCE_MANUAL = "MANUAL"
 private const val SOURCE_MANUAL_EDIT = "MANUAL_EDIT"
-private const val SOURCE_SMS_BALANCE = "SMS_BALANCE"
+internal const val SOURCE_SMS_BALANCE = "SMS_BALANCE"
 
 @Dao
 abstract class AccountBalanceDao {
@@ -58,7 +58,11 @@ abstract class AccountBalanceDao {
             t.amount AS transactionAmount,
             t.transaction_type AS transactionType,
             t.balance_after AS transactionBalanceAfter,
-            t.is_deleted AS isDeleted
+            t.is_deleted AS isDeleted,
+            ab.currency AS accountCurrency,
+            t.currency AS transactionCurrency,
+            t.bank_name AS transactionBankName,
+            t.account_number AS transactionAccountNumber
         FROM account_balances ab
         LEFT JOIN transactions t ON t.id = ab.transaction_id
         WHERE ab.bank_name = :bankName AND ab.account_last4 = :accountLast4
@@ -100,8 +104,18 @@ abstract class AccountBalanceDao {
         smsSource: String?,
         currency: String
     ): Long {
+        // The table holds one row per account per instant (a unique index) and
+        // inserts replace on conflict. Two transactions stamped with the same time
+        // on one account - a bulk date change, two alerts in the same second -
+        // would silently overwrite each other's row and lose one of them. Step
+        // past any instant that is already taken.
+        var slot = timestamp
+        while (getLatestBalanceOnOrBefore(bankName, accountLast4, slot)?.timestamp == slot) {
+            slot = slot.plusNanos(1_000_000)
+        }
+
         val latest = getLatestBalance(bankName, accountLast4)
-        val previous = getLatestBalanceOnOrBefore(bankName, accountLast4, timestamp)
+        val previous = getLatestBalanceOnOrBefore(bankName, accountLast4, slot)
 
         // Fix for manually-created accounts: when the account was set up today (MANUAL entry),
         // backdated transactions have no prior entry. Fall back to the earliest MANUAL balance
@@ -125,7 +139,7 @@ abstract class AccountBalanceDao {
                 bankName = bankName,
                 accountLast4 = accountLast4,
                 balance = newBalance,
-                timestamp = timestamp,
+                timestamp = slot,
                 transactionId = transactionId,
                 creditLimit = if (accountIsCreditCard) {
                     // Parsers report the *available* limit, so the total limit is
@@ -155,28 +169,57 @@ abstract class AccountBalanceDao {
             )
         )
 
-        recalculateBalancesAfter(bankName, accountLast4, timestamp, newBalance)
+        // `previous` is what preceded the first later row before this insert, so
+        // rows whose effect has to be carried over can still be measured.
+        recalculateBalancesAfter(
+            bankName,
+            accountLast4,
+            slot,
+            newBalance,
+            previousOldBalance = previous?.balance
+        )
         return balanceId
     }
 
+    /**
+     * Recalculates every row after [timestamp], starting from [startingBalance].
+     *
+     * [previousOldBalance] is the balance the row just before them held before the
+     * change that triggered this pass. Some rows cannot be recalculated from their
+     * transaction alone (see [keepsAppliedEffect]); their original effect is the
+     * step from that balance to their own, and it is carried over unchanged.
+     * Without it they fall back to being recalculated.
+     */
     open suspend fun recalculateBalancesAfter(
         bankName: String,
         accountLast4: String,
         timestamp: LocalDateTime,
-        startingBalance: BigDecimal
+        startingBalance: BigDecimal,
+        previousOldBalance: BigDecimal? = null
     ) {
-        recalculateBalancesAfterInternal(bankName, accountLast4, timestamp, startingBalance)
+        recalculateBalancesAfterInternal(
+            bankName,
+            accountLast4,
+            timestamp,
+            startingBalance,
+            previousOldBalance
+        )
     }
 
     private suspend fun recalculateBalancesAfterInternal(
         bankName: String,
         accountLast4: String,
         timestamp: LocalDateTime,
-        startingBalance: BigDecimal
+        startingBalance: BigDecimal,
+        previousOldBalance: BigDecimal?
     ) {
         var runningBalance = startingBalance
+        var previousOld = previousOldBalance
         for (row in getBalancesAfterWithTransactions(bankName, accountLast4, timestamp)) {
             val sourceType = row.sourceType
+            val originalBalance = row.balance
+            val balanceBeforeRow = previousOld
+            previousOld = originalBalance
 
             // MANUAL entries (user-created account setup) are NOT hard stops.
             // When a backdated transaction is added before a MANUAL entry, the cascade
@@ -191,7 +234,14 @@ abstract class AccountBalanceDao {
             }
 
             // Bank-reported explicit balances (SMS) are authoritative anchors — stop here.
-            val isExplicitBalance = row.transactionBalanceAfter != null ||
+            // A transaction's reported balance belongs to the account it was reported
+            // on. The other leg of a transfer shares the transaction but not the
+            // balance, and treating it as an anchor stopped the destination account
+            // from ever being recalculated past it.
+            val reportedForThisAccount = row.transactionBalanceAfter != null &&
+                    (row.transactionBankName == null ||
+                        isTransactionsOwnAccount(row, bankName, accountLast4))
+            val isExplicitBalance = reportedForThisAccount ||
                     sourceType == SOURCE_TRANSACTION_SMS_BALANCE ||
                     sourceType == SOURCE_SMS_BALANCE
 
@@ -215,16 +265,17 @@ abstract class AccountBalanceDao {
             val amount = row.transactionAmount
             val transactionType = row.transactionType?.let { runCatching { TransactionType.valueOf(it) }.getOrNull() }
             val isDeleted = row.isDeleted == true
-            
-            val recalculated = if (amount != null && transactionType != null && !isDeleted) {
-                calculateTransactionBalance(
+
+            val recalculated = when {
+                amount == null || transactionType == null || isDeleted -> runningBalance
+                balanceBeforeRow != null && keepsAppliedEffect(row, transactionType) ->
+                    runningBalance + (originalBalance - balanceBeforeRow)
+                else -> calculateTransactionBalance(
                     currentBalance = runningBalance,
                     amount = amount,
-                    transactionType = transactionType,
+                    transactionType = legType(row, transactionType, bankName, accountLast4),
                     isCreditCard = row.isCreditCard
                 )
-            } else {
-                runningBalance
             }
 
             if (recalculated != row.balance) {
@@ -411,6 +462,14 @@ abstract class AccountBalanceDao {
     @Query("SELECT * FROM account_balances WHERE transaction_id = :transactionId LIMIT 1")
     abstract suspend fun getBalanceByTransactionId(transactionId: Long): AccountBalanceEntity?
 
+    /** Every row a transaction wrote: one per account it touched, so two for a transfer. */
+    @Query("""
+        SELECT * FROM account_balances
+        WHERE transaction_id = :transactionId
+        ORDER BY timestamp ASC, id ASC
+    """)
+    abstract suspend fun getBalancesByTransactionId(transactionId: Long): List<AccountBalanceEntity>
+
     /** Finds the latest account record for a given last-4 digits, regardless of bank name. */
     @Query("""
         SELECT * FROM account_balances
@@ -441,8 +500,51 @@ data class AccountBalanceTransactionInfo(
     val transactionAmount: BigDecimal?,
     val transactionType: String?,
     val transactionBalanceAfter: BigDecimal?,
-    val isDeleted: Boolean?
+    val isDeleted: Boolean?,
+    val accountCurrency: String? = null,
+    val transactionCurrency: String? = null,
+    val transactionBankName: String? = null,
+    val transactionAccountNumber: String? = null
 )
+
+/** Whether [row] sits on the account its transaction names, rather than the other leg of a transfer. */
+private fun isTransactionsOwnAccount(
+    row: AccountBalanceTransactionInfo,
+    bankName: String,
+    accountLast4: String
+): Boolean = row.transactionBankName == bankName && row.transactionAccountNumber == accountLast4
+
+/**
+ * Rows whose effect cannot be worked out again from their transaction alone.
+ *
+ * A transfer row may be the money leaving the source, the money arriving at the
+ * destination, or a bank alert that was recorded as it stood; the transaction
+ * does not say which, and recalculating one as plain spending is what turned a
+ * card payment into a charge. A foreign-currency row was converted when it was
+ * applied, and recalculating it from the raw amount treats 30 USD as 30 of the
+ * account's own currency. Both keep the effect they were given.
+ */
+private fun keepsAppliedEffect(row: AccountBalanceTransactionInfo, type: TransactionType): Boolean {
+    if (type == TransactionType.TRANSFER) return true
+    val transactionCurrency = row.transactionCurrency ?: return false
+    val accountCurrency = row.accountCurrency ?: return false
+    return !transactionCurrency.equals(accountCurrency, ignoreCase = true)
+}
+
+/**
+ * The type to recalculate a row with when its original effect is not known: a
+ * transfer takes money out of the account it names and puts it into the other.
+ */
+private fun legType(
+    row: AccountBalanceTransactionInfo,
+    type: TransactionType,
+    bankName: String,
+    accountLast4: String
+): TransactionType = when {
+    type != TransactionType.TRANSFER -> type
+    isTransactionsOwnAccount(row, bankName, accountLast4) -> TransactionType.EXPENSE
+    else -> TransactionType.INCOME
+}
 
 /**
  * The signed change a transaction makes to an account's balance.

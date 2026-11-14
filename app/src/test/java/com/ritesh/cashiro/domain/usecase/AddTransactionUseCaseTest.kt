@@ -13,6 +13,8 @@ import com.ritesh.cashiro.data.repository.AccountBalanceRepository
 import com.ritesh.cashiro.data.repository.SubscriptionRepository
 import com.ritesh.cashiro.data.repository.TransactionRepository
 import com.ritesh.cashiro.testing.FakeAccountBalanceDao
+import com.ritesh.cashiro.testing.FakeSubscriptionDao
+import com.ritesh.cashiro.testing.FakeTransactionDao
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDateTime
@@ -376,6 +378,8 @@ class AddTransactionUseCaseTest {
         val accountBalanceRepo = AccountBalanceRepository(balanceDao, context)
         val dao = FakeTransactionDao()
         transactionDao = dao
+        // Recalculation reads each row's transaction, as the real query joins it.
+        balanceDao.transactionLookup = { dao.byId(it) }
         val converter = FakeCurrencyConverter()
         val transactionRepo = TransactionRepository(dao, accountBalanceRepo, converter)
         val subscriptionDao = FakeSubscriptionDao()
@@ -394,118 +398,5 @@ class AddTransactionUseCaseTest {
             toCurrency: String,
             forceRefresh: Boolean
         ): BigDecimal = amount
-    }
-
-    private class FakeTransactionDao : TransactionDao {
-        var insertedTransactions = mutableListOf<TransactionEntity>()
-        private var nextId = 1L
-
-        override suspend fun insertTransaction(transaction: TransactionEntity): Long {
-            val id = nextId++
-            insertedTransactions.add(transaction.copy(id = id))
-            return id
-        }
-
-        override suspend fun getTransactionByHash(transactionHash: String): TransactionEntity? = null
-
-        override fun getAllTransactions(): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override fun getTransactionCount(): Flow<Int> = flowOf(0)
-        override suspend fun getTransactionById(transactionId: Long): TransactionEntity? = null
-        override fun getTransactionsBetweenDates(
-            startDate: LocalDateTime, endDate: LocalDateTime
-        ): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override fun getTransactionsFiltered(
-            startDate: LocalDateTime, endDate: LocalDateTime,
-            currency: String, transactionType: TransactionType?
-        ): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override fun getTransactionsByType(type: TransactionType): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override fun getTransactionsByCategory(category: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override fun searchTransactions(searchQuery: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override suspend fun searchTransactionsList(searchQuery: String): List<TransactionEntity> = emptyList()
-        override fun getAllCategories(): Flow<List<String>> = flowOf(emptyList())
-        override suspend fun getTopCategoriesByUsage(limit: Int): List<String> = emptyList()
-        override fun getAllMerchants(): Flow<List<String>> = flowOf(emptyList())
-        override suspend fun getTotalAmountByTypeAndPeriod(
-            type: TransactionType, startDate: LocalDateTime, endDate: LocalDateTime
-        ): Double? = null
-        override suspend fun insertTransactions(transactions: List<TransactionEntity>) = Unit
-        override suspend fun updateTransaction(transaction: TransactionEntity) = Unit
-        override suspend fun deleteTransaction(transaction: TransactionEntity) = Unit
-        override suspend fun deleteTransactionById(transactionId: Long) = Unit
-        override suspend fun deleteAllTransactions() = Unit
-        override suspend fun deleteSampleTransactions() = Unit
-        override suspend fun updateCategoryForMerchant(merchantName: String, newCategory: String) = Unit
-        override suspend fun updateCategoryAndSubcategoryForMerchantContains(
-            merchantName: String, newCategory: String, newSubcategory: String?
-        ) = Unit
-        override suspend fun getTransactionCountForMerchant(merchantName: String, excludeId: Long): Int = 0
-        override suspend fun getTransactionsByMerchantContains(
-            merchantName: String, excludeId: Long
-        ): List<TransactionEntity> = emptyList()
-        override fun getAllCurrencies(): Flow<List<String>> = flowOf(emptyList())
-        override fun getCurrenciesForPeriod(
-            startDate: LocalDateTime, endDate: LocalDateTime
-        ): Flow<List<String>> = flowOf(emptyList())
-        override suspend fun softDeleteTransaction(transactionId: Long) = Unit
-        override suspend fun softDeleteByHash(transactionHash: String) = Unit
-        override suspend fun softDeleteTransactions(transactionIds: List<Long>) = Unit
-        override suspend fun deleteTransactionsByIds(transactionIds: List<Long>) = Unit
-        override suspend fun getTransactionsByReferenceAndAmount(
-            reference: String,
-            amount: java.math.BigDecimal,
-            accountLast4: String?,
-            startDate: LocalDateTime,
-            endDate: LocalDateTime
-        ): List<TransactionEntity> = emptyList()
-        override suspend fun getTransactionsBetweenDatesList(
-            startDate: LocalDateTime, endDate: LocalDateTime
-        ): List<TransactionEntity> = emptyList()
-        override fun getTransactionsByAccount(
-            bankName: String, accountLast4: String
-        ): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override fun getTransactionsByAccountAndDateRange(
-            bankName: String, accountLast4: String,
-            startDate: LocalDateTime, endDate: LocalDateTime
-        ): Flow<List<TransactionEntity>> = flowOf(emptyList())
-        override suspend fun updateAccountForTransactions(
-            oldBankName: String, oldAccountNumber: String,
-            newBankName: String, newAccountNumber: String
-        ) = Unit
-        override suspend fun updateTransactionsCategory(
-            oldCategory: String, newCategory: String, newSubcategory: String?
-        ) = Unit
-        override suspend fun getTransactionCountByCategory(category: String): Int = 0
-        override suspend fun findPotentialDuplicates(
-            startDate: LocalDateTime, endDate: LocalDateTime
-        ): List<TransactionEntity> = emptyList()
-        override suspend fun getTransactionsUpdatedBetween(
-            updatedAfter: LocalDateTime, updatedBefore: LocalDateTime, currency: String
-        ): List<TransactionEntity> = emptyList()
-        override suspend fun getTransactionsBetweenDatesByCurrency(
-            startDate: LocalDateTime, endDate: LocalDateTime, currency: String
-        ): List<TransactionEntity> = emptyList()
-    }
-
-    private class FakeSubscriptionDao : SubscriptionDao {
-        override suspend fun insertSubscription(subscription: com.ritesh.cashiro.data.database.entity.SubscriptionEntity): Long = 1
-        override fun getAllSubscriptions(): Flow<List<com.ritesh.cashiro.data.database.entity.SubscriptionEntity>> = flowOf(emptyList())
-        override fun getSubscriptionsByState(state: com.ritesh.cashiro.data.database.entity.SubscriptionState): Flow<List<com.ritesh.cashiro.data.database.entity.SubscriptionEntity>> = flowOf(emptyList())
-        override fun getActiveSubscriptions(): Flow<List<com.ritesh.cashiro.data.database.entity.SubscriptionEntity>> = flowOf(emptyList())
-        override fun getUpcomingSubscriptions(date: java.time.LocalDate): Flow<List<com.ritesh.cashiro.data.database.entity.SubscriptionEntity>> = flowOf(emptyList())
-        override suspend fun getActiveSubscriptionByMerchant(merchantName: String): com.ritesh.cashiro.data.database.entity.SubscriptionEntity? = null
-        override suspend fun getHiddenSubscriptionByMerchant(merchantName: String): com.ritesh.cashiro.data.database.entity.SubscriptionEntity? = null
-        override suspend fun getSubscriptionByUmn(umn: String): com.ritesh.cashiro.data.database.entity.SubscriptionEntity? = null
-        override suspend fun getSubscriptionByMerchantAmountAndDate(merchantName: String, amount: BigDecimal, paymentDate: java.time.LocalDate): com.ritesh.cashiro.data.database.entity.SubscriptionEntity? = null
-        override suspend fun getSubscriptionByMerchantAndAmount(merchantName: String, amount: BigDecimal): com.ritesh.cashiro.data.database.entity.SubscriptionEntity? = null
-        override suspend fun getSubscriptionById(id: Long): com.ritesh.cashiro.data.database.entity.SubscriptionEntity? = null
-        override suspend fun updateSubscription(subscription: com.ritesh.cashiro.data.database.entity.SubscriptionEntity) = Unit
-        override suspend fun updateSubscriptionState(id: Long, state: com.ritesh.cashiro.data.database.entity.SubscriptionState) = Unit
-        override suspend fun updateNextPaymentDate(id: Long, nextPaymentDate: java.time.LocalDate) = Unit
-        override suspend fun updatePaymentStatus(id: Long, nextPaymentDate: java.time.LocalDate, lastPaidDate: java.time.LocalDate?) = Unit
-        override suspend fun deleteSubscription(subscription: com.ritesh.cashiro.data.database.entity.SubscriptionEntity) = Unit
-        override suspend fun deleteSubscriptionById(id: Long) = Unit
-        override suspend fun getSubscriptionsByStateList(state: com.ritesh.cashiro.data.database.entity.SubscriptionState): List<com.ritesh.cashiro.data.database.entity.SubscriptionEntity> = emptyList()
-        override suspend fun deleteSampleSubscriptions() = Unit
-        override suspend fun deleteAllSubscriptions() = Unit
     }
 }
