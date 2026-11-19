@@ -127,7 +127,7 @@ fun TransactionsFilterBottomSheet(
                         ),
                         horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
                     ) {
-                        items(TransactionTypeFilter.entries) { type ->
+                        items(com.ritesh.cashiro.presentation.common.selectableTypeFilters) { type ->
                             FilterChip(
                                 selected = if (type == TransactionTypeFilter.ALL) typeFilter.isEmpty() else typeFilter.contains(type),
                                 onClick = { viewModel.setTransactionTypeFilter(type) },

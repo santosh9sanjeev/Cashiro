@@ -1349,7 +1349,12 @@ private fun EditableTransactionHeader(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    TransactionType.entries.filter { it != TransactionType.BALANCE_UPDATE }.forEach { type ->
+                    // The offered types, plus the one this transaction already has
+                    // if it is no longer offered, so it still shows as selected.
+                    (com.ritesh.cashiro.presentation.common.selectableTransactionTypes + transaction.transactionType)
+                        .distinct()
+                        .filter { it != TransactionType.BALANCE_UPDATE }
+                        .forEach { type ->
                         FilterChip(
                             selected = transaction.transactionType == type,
                             onClick = { viewModel.updateTransactionType(type) },

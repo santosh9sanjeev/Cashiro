@@ -2,6 +2,7 @@ package com.ritesh.cashiro.presentation.common
 
 import androidx.annotation.StringRes
 import com.ritesh.cashiro.R
+import com.ritesh.cashiro.data.database.entity.TransactionType
 import java.time.LocalDate
 import java.time.YearMonth
 
@@ -22,6 +23,27 @@ enum class TransactionTypeFilter(@StringRes val labelRes: Int) {
     INVESTMENT(R.string.type_investment),
     LENT(R.string.type_lent),
     BORROWED(R.string.type_borrowed)
+}
+
+/**
+ * The types a transaction can be given. Credit card spending is an expense and
+ * paying the card off is a transfer, so total spending counts each purchase
+ * once; lending and borrowing are kept in the people ledger. Credit, Lent and
+ * Borrowed are therefore not offered. Transactions already saved with one of
+ * them keep it.
+ */
+val selectableTransactionTypes: List<TransactionType> = listOf(
+    TransactionType.EXPENSE,
+    TransactionType.INCOME,
+    TransactionType.TRANSFER,
+    TransactionType.INVESTMENT
+)
+
+/** The type filters offered, matching [selectableTransactionTypes]. */
+val selectableTypeFilters: List<TransactionTypeFilter> = TransactionTypeFilter.entries.filter {
+    it != TransactionTypeFilter.CREDIT &&
+        it != TransactionTypeFilter.LENT &&
+        it != TransactionTypeFilter.BORROWED
 }
 
 fun getDateRangeForPeriod(period: TimePeriod): Pair<LocalDate, LocalDate>? {

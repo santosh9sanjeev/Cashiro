@@ -199,7 +199,7 @@ fun TransactionTabContent(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    TransactionType.entries.filter { it != TransactionType.BALANCE_UPDATE }.forEach { type ->
+                    com.ritesh.cashiro.presentation.common.selectableTransactionTypes.forEach { type ->
                         FilterChip(
                             selected = uiState.transactionType == type,
                             onClick = { viewModel.updateTransactionType(type) },

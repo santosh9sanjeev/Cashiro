@@ -256,7 +256,7 @@ fun SharedTransitionScope.AnalyticsScreen(
                                 item{
                                     Spacer(modifier = Modifier.width(16.dp))
                                 }
-                                items(TransactionTypeFilter.entries) { typeFilter ->
+                                items(com.ritesh.cashiro.presentation.common.selectableTypeFilters) { typeFilter ->
                                     FilterChip(
                                         selected = transactionTypeFilter.contains(typeFilter),
                                         onClick = { analyticsViewModel.toggleTransactionTypeFilter(typeFilter) },

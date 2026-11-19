@@ -21,11 +21,14 @@ fun ParsedTransaction.toEntity(): TransactionEntity {
     // Normalize merchant name to proper case
     val normalizedMerchant = merchant?.let { normalizeMerchantName(it) }
 
-    // Map TransactionType from parser-core to database entity
+    // Map TransactionType from parser-core to database entity. A credit card
+    // purchase is saved as an expense: it is spending like any other, and paying
+    // the card off later is a transfer, so it is counted once. Which account it is
+    // owed on still comes from the alert being a credit card one.
     val entityType = when (type) {
         com.ritesh.parser.core.TransactionType.INCOME -> TransactionType.INCOME
         com.ritesh.parser.core.TransactionType.EXPENSE -> TransactionType.EXPENSE
-        com.ritesh.parser.core.TransactionType.CREDIT -> TransactionType.CREDIT
+        com.ritesh.parser.core.TransactionType.CREDIT -> TransactionType.EXPENSE
         com.ritesh.parser.core.TransactionType.TRANSFER -> TransactionType.TRANSFER
         com.ritesh.parser.core.TransactionType.INVESTMENT -> TransactionType.INVESTMENT
         com.ritesh.parser.core.TransactionType.BALANCE_UPDATE -> TransactionType.BALANCE_UPDATE

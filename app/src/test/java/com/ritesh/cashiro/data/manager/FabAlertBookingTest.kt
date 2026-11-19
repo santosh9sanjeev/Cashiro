@@ -174,6 +174,7 @@ class FabAlertBookingTest {
         assertBalance("580", cardBank, card, "the purchase adds to what the card owes")
         assertBalance("10000", userBank, account, "the bank account is untouched")
         assertEquals(card, purchase.accountNumber)
+        assertEquals(TransactionType.EXPENSE, purchase.transactionType, "a card purchase is spending, not a separate credit type")
         val limit = assertNotNull(balanceDao.latest(cardBank, card)?.creditLimit, "the card keeps a limit")
         assertTrue(
             BigDecimal("5000").compareTo(limit) == 0,
